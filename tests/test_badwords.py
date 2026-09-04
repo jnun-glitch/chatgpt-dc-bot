@@ -51,3 +51,13 @@ def test_find_bad_word_whitespace_text():
 
 def test_find_bad_word_short_word_does_not_match_inside_long_word():
     assert find_bad_word("sexistisch") is None
+
+
+def test_find_bad_word_stays_aligned_after_empty_source_entry():
+    import core.badwords as badwords
+
+    patterns = badwords._build_patterns(["", "idiot"])
+    words = [word for word in ["", "idiot"] if badwords._normalize_text(word)]
+    normalized = badwords._normalize_text("IDIOT")
+    assert patterns[0].search(normalized)
+    assert words[0] == "idiot"
