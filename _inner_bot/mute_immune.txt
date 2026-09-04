@@ -1,0 +1,6 @@
+# Mute-Immune Whitelist
+# Eine User-ID pro Zeile
+# Users auf dieser Liste können nicht durch Auto-Mute gemutet werden
+#
+# OWNER
+1265657381476630589
