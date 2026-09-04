@@ -52,12 +52,13 @@ def _load_bad_words() -> list:
 
 BAD_WORDS = _load_bad_words()
 
-# Mehr Varianten als nur \b...\b: Satzzeichen und typische Schreibvarianten
+# Mehr Varianten als nur \\b...\\b: Satzzeichen und typische Schreibvarianten
 # zwischen Buchstaben werden erkannt, ohne normale Wörter unnötig zu blockieren.
 _NORMALIZE_TRANSLATION = str.maketrans({
     '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a',
     '$': 's',
 })
+
 
 def _normalize_text(text: str) -> str:
     text = unicodedata.normalize('NFKC', text).lower().translate(_NORMALIZE_TRANSLATION)
@@ -83,11 +84,15 @@ def _build_patterns(words: list[str]):
 
 
 _BAD_WORD_PATTERNS = _build_patterns(BAD_WORDS)
+# Nur Wörter mit einem tatsächlich kompilierbaren Muster zuordnen. So bleiben
+# Liste und Pattern auch dann korrekt ausgerichtet, wenn die Quelldatei leere
+# oder nur aus Trennzeichen bestehende Einträge enthält.
+_BAD_WORD_PATTERN_WORDS = [word for word in BAD_WORDS if _normalize_text(word)]
 
 
 def find_bad_word(content: str) -> str | None:
     normalized = _normalize_text(content)
-    for pattern, original in zip(_BAD_WORD_PATTERNS, BAD_WORDS):
+    for pattern, original in zip(_BAD_WORD_PATTERNS, _BAD_WORD_PATTERN_WORDS):
         if pattern.search(normalized):
             return original
     return None
