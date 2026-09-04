@@ -59,7 +59,6 @@ def make_welcome_card(member, member_count, guild_name):
         W, H = 1000, 350
         bg = Image.new('RGBA', (W, H), (44, 47, 62, 255))
         draw = ImageDraw.Draw(bg)
-        # Verlauf-Effekt (horizontale Streifen)
         for i in range(H):
             t = i / H
             r = int(44 + (75 - 44) * t)
@@ -80,8 +79,11 @@ def make_welcome_card(member, member_count, guild_name):
         name = member.display_name if member.display_name else member.name
         if len(name) > 26:
             name = name[:24] + '…'
+        guild_name = guild_name or "Server"
+        if len(guild_name) > 34:
+            guild_name = guild_name[:31] + '…'
         draw.text((290, 70), f'Willkommen {name}!', font=title_font, fill=(255, 255, 255))
-        draw.text((292, 160), f'Herzlich willkommen im **{guild_name}** Discord!',
+        draw.text((292, 160), f'Herzlich willkommen im {guild_name} Discord!',
                   font=sub_font, fill=(220, 225, 240))
         draw.text((292, 215), f'Du bist Mitglied #{member_count} 💜', font=small_font, fill=(190, 200, 230))
 
@@ -137,10 +139,10 @@ def make_rank_card(member, level, xp, xp_needed, rank, member_count):
 
 
 async def make_welcome_card_async(member, member_count, guild_name):
-    """Blockierende Bildgenerierung (Avatar-Download + Pillow) aus dem Event-Loop auslagern."""
+    """Blockierende Bildgenerierung aus dem Event-Loop auslagern."""
     return await asyncio.to_thread(make_welcome_card, member, member_count, guild_name)
 
 
 async def make_rank_card_async(member, level, xp, xp_needed, rank, member_count):
-    """Blockierende Bildgenerierung (Avatar-Download + Pillow) aus dem Event-Loop auslagern."""
+    """Blockierende Bildgenerierung aus dem Event-Loop auslagern."""
     return await asyncio.to_thread(make_rank_card, member, level, xp, xp_needed, rank, member_count)
