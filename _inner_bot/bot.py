@@ -150,20 +150,31 @@ def run_web() -> None:
 
 
 def run_bot() -> None:
+    """Start the Discord client exactly once.
+
+    discord.py owns the event loop and HTTP session. Reusing the same Bot object
+    after bot.run() has failed can leave its aiohttp session closed, which causes
+    misleading follow-up errors such as ``RuntimeError: Session is closed``.
+    Discord.py already handles normal gateway reconnects itself, so a process-level
+    retry loop here is both unnecessary and unsafe.
+    """
     global restart_count
-    while True:
-        try:
-            restart_count += 1
-            print(f"\n[START] Bot Start #{restart_count}...")
-            bot.run(BOT_TOKEN, log_handler=None)
-            break
-        except KeyboardInterrupt:
-            print("\n[STOP] Manuell gestoppt.")
-            break
-        except Exception:
-            traceback.print_exc()
-            print("[RESTART] Neustart in 5 Sekunden...")
-            time.sleep(5)
+    restart_count = 1
+
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "DISCORD_TOKEN ist nicht gesetzt. Trage den Bot-Token in _inner_bot/.env ein."
+        )
+
+    print("\n[START] Starte Discord-Bot...")
+    try:
+        bot.run(BOT_TOKEN, log_handler=None)
+    except KeyboardInterrupt:
+        print("\n[STOP] Manuell gestoppt.")
+    except Exception:
+        traceback.print_exc()
+        print("[STOP] Bot wurde wegen eines Startfehlers beendet.")
+        raise
 
 
 @bot.event
