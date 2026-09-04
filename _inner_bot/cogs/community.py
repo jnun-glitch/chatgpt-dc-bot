@@ -1,12 +1,14 @@
 """Community: Level, Leaderboard, Poll, Reminder, Help."""
 import re as _re
 from datetime import datetime, timedelta, timezone
+
 import discord
 from discord import app_commands
 from discord.ext import commands
+
 from core.config import WEBAPP_URL
 from core.db import get_db, _get_xp, _get_leaderboard, _xp_for_level, save_reminder, get_user_reminders, cancel_reminder
-from core.badwords import _BAD_WORD_RE
+from core.badwords import find_bad_word
 from core.images import make_rank_card_async
 
 
@@ -16,6 +18,7 @@ class CommunityCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @app_commands.guild_only()
     @app_commands.command(name='level', description='Zeige dein Level und XP')
     @app_commands.describe(user='User zum Prüfen (optional)')
     async def cmd_level(self, interaction: discord.Interaction, user: discord.Member = None):
@@ -117,7 +120,7 @@ class CommunityCog(commands.Cog):
         channel_id = str(interaction.channel_id)
 
         # Bad-Wort-Filter auf den Erinnerungstext
-        if _BAD_WORD_RE.search(text):
+        if find_bad_word(text):
             await interaction.response.send_message(
                 '🚫 Der Erinnerungstext enthält unangemessene Sprache und wurde abgelehnt.',
                 ephemeral=True
