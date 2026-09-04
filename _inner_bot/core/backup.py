@@ -18,7 +18,8 @@ EXCLUDED_NAMES = {".env", ".env.local", ".env.production", "secrets.json"}
 
 
 def _utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    """Create a filename-safe UTC timestamp with microsecond precision."""
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
 
 
 def _sha256(path: Path) -> str:
