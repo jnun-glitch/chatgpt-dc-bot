@@ -24,7 +24,19 @@ from discord.ext import commands, tasks
 from core.db import get_db
 from core.logging import logger
 
-POLL_SECONDS = max(30, int(os.environ.get("NOTIFY_POLL_SECONDS", "60")))
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
+        return default
+
+
+POLL_SECONDS = _env_int("NOTIFY_POLL_SECONDS", 60, 30)
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "").strip()
 TWITCH_CLIENT_SECRET = os.environ.get("TWITCH_CLIENT_SECRET", "").strip()
 X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "").strip()
@@ -182,9 +194,6 @@ def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
         if item["id"] == marker:
             return unique[index + 1 :]
 
-    # Provider feeds can drop old entries. If the persisted marker is no longer
-    # present, process the currently available window once rather than silently
-    # missing all current items.
     return unique
 
 
@@ -239,6 +248,14 @@ class SocialCog(commands.Cog):
         db.execute("UPDATE social_notifications SET last_seen=COALESCE(?,last_seen), state=COALESCE(?,state) WHERE id=?", (last_seen, state, sub_id))
         db.commit()
 
+    async def _resolve_lookup_account(self, provider: str, account: str) -> str:
+        normalized = normalize_account(provider, account)
+        if provider == "youtube":
+            return await asyncio.to_thread(resolve_youtube_channel_id, normalized)
+        if provider == "twitch":
+            return (await asyncio.to_thread(twitch_user, normalized)).get("login", normalized).lower()
+        return (await asyncio.to_thread(x_user, normalized)).get("username", normalized).lower()
+
     @group.command(name="add", description="Creator-Alert hinzufügen")
     @app_commands.describe(provider="youtube, twitch oder x", account="Kanal/Login/@Name", channel="Discord-Kanal", role="Optionale Ping-Rolle")
     @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch"), app_commands.Choice(name="X", value="x")])
@@ -246,13 +263,7 @@ class SocialCog(commands.Cog):
     async def add(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str, channel: discord.TextChannel, role: discord.Role | None = None):
         p = provider.value
         try:
-            account = normalize_account(p, account)
-            if p == "youtube":
-                account = await asyncio.to_thread(resolve_youtube_channel_id, account)
-            elif p == "twitch":
-                account = (await asyncio.to_thread(twitch_user, account)).get("login", account).lower()
-            else:
-                account = (await asyncio.to_thread(x_user, account)).get("username", account).lower()
+            account = await self._resolve_lookup_account(p, account)
         except Exception as exc:
             await interaction.response.send_message(f"❌ Prüfung fehlgeschlagen: `{exc}`", ephemeral=True)
             return
@@ -273,12 +284,10 @@ class SocialCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
         p = provider.value
-        account = normalize_account(p, account)
-        if p == "youtube" and not account.startswith("UC"):
-            try:
-                account = await asyncio.to_thread(resolve_youtube_channel_id, account)
-            except Exception:
-                pass
+        try:
+            account = await self._resolve_lookup_account(p, account)
+        except Exception:
+            account = normalize_account(p, account)
         db = get_db()
         cur = db.execute("DELETE FROM social_notifications WHERE guild_id=? AND provider=? AND account=?", (str(interaction.guild_id), p, account))
         db.commit()
@@ -295,15 +304,30 @@ class SocialCog(commands.Cog):
         for p, account, channel_id, role_id, enabled in rows:
             channel = interaction.guild.get_channel(int(channel_id))
             lines.append(f"{'🟢' if enabled else '⏸️'} **{p}** `{account}` → {channel.mention if channel else '#gelöscht'}" + (f" · <@&{role_id}>" if role_id else ""))
-        await interaction.response.send_message("📡 **Creator Alerts**\n" + "\n".join(lines), ephemeral=True)
+        # Discord interaction messages have a 2000-character content limit.
+        chunks: list[str] = []
+        current = "📡 **Creator Alerts**\n"
+        for line in lines:
+            if len(current) + len(line) + 1 > 1900:
+                chunks.append(current.rstrip())
+                current = ""
+            current += line + "\n"
+        if current.strip():
+            chunks.append(current.rstrip())
+        await interaction.response.send_message(chunks[0], ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
 
     @group.command(name="test", description="Test-Alert senden")
     @app_commands.describe(provider="Provider", account="Kanal/Login/@Name")
-    @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch"), app_commands.Choice(name="X", value="x")])
+    @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch") , app_commands.Choice(name="X", value="x")])
     @app_commands.checks.has_permissions(manage_guild=True)
     async def test(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
         p = provider.value
-        account = normalize_account(p, account)
+        try:
+            account = await self._resolve_lookup_account(p, account)
+        except Exception:
+            account = normalize_account(p, account)
         row = get_db().execute("SELECT channel_id,role_id FROM social_notifications WHERE guild_id=? AND provider=? AND account=?", (str(interaction.guild_id), p, account)).fetchone()
         if not row:
             await interaction.response.send_message("❌ Creator nicht eingerichtet.", ephemeral=True)
@@ -313,7 +337,14 @@ class SocialCog(commands.Cog):
             await interaction.response.send_message("❌ Zielkanal nicht gefunden.", ephemeral=True)
             return
         embed = discord.Embed(title=f"📡 {p.upper()} Test", description=f"Alert-System für `{account}` funktioniert.", timestamp=datetime.now(timezone.utc), color=discord.Color.blurple())
-        await channel.send(embed=embed)
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Ich darf im Zielkanal keine Nachrichten senden.", ephemeral=True)
+            return
+        except discord.HTTPException as exc:
+            await interaction.response.send_message(f"❌ Discord-Fehler: `{exc}`", ephemeral=True)
+            return
         await interaction.response.send_message(f"✅ Test in {channel.mention} gesendet.", ephemeral=True)
 
     @tasks.loop(seconds=POLL_SECONDS)
@@ -333,12 +364,15 @@ class SocialCog(commands.Cog):
     async def _before_poll(self):
         await self.bot.wait_until_ready()
 
-    async def _send(self, sub: Subscription, embed: discord.Embed):
+    async def _send(self, sub: Subscription, embed: discord.Embed) -> None:
         channel = self.bot.get_channel(sub.channel_id)
         if not isinstance(channel, discord.TextChannel):
-            return
+            raise RuntimeError(f"Zielkanal {sub.channel_id} nicht gefunden")
         role = channel.guild.get_role(sub.role_id) if sub.role_id else None
-        await channel.send(content=role.mention if role else None, embed=embed, allowed_mentions=discord.AllowedMentions(roles=bool(role), everyone=False, users=False))
+        try:
+            await channel.send(content=role.mention if role else None, embed=embed, allowed_mentions=discord.AllowedMentions(roles=bool(role), everyone=False, users=False))
+        except discord.Forbidden as exc:
+            raise RuntimeError(f"Keine Sendeberechtigung in Kanal {sub.channel_id}") from exc
 
     async def _youtube(self, sub: Subscription):
         items = await asyncio.to_thread(youtube_feed, sub.account)
@@ -351,7 +385,7 @@ class SocialCog(commands.Cog):
             embed = discord.Embed(title="📺 Neues YouTube-Video", description=f"**{item['title']}**\n{item['url']}", url=item["url"], timestamp=datetime.now(timezone.utc), color=discord.Color.red())
             embed.set_footer(text=item.get("creator") or "YouTube")
             await self._send(sub, embed)
-        self._save(sub.id, last_seen=unseen[-1]["id"])
+            self._save(sub.id, last_seen=item["id"])
 
     async def _twitch(self, sub: Subscription):
         stream = await asyncio.to_thread(twitch_stream, sub.account)
@@ -360,7 +394,7 @@ class SocialCog(commands.Cog):
                 self._save(sub.id, state="offline")
             return
         stream_id = str(stream.get("id", ""))
-        if sub.state != stream_id:
+        if stream_id and sub.state != stream_id:
             url = f"https://twitch.tv/{sub.account}"
             embed = discord.Embed(title="🔴 Twitch ist live", description=f"**{stream.get('title') or 'Twitch Stream'}**\n🎮 {stream.get('game_name') or 'Unbekannte Kategorie'}\n👀 {stream.get('viewer_count', 0)} Zuschauer\n{url}", url=url, timestamp=datetime.now(timezone.utc), color=discord.Color.purple())
             thumb = stream.get("thumbnail_url")
@@ -386,7 +420,7 @@ class SocialCog(commands.Cog):
                 if preview:
                     embed.set_image(url=preview)
             await self._send(sub, embed)
-        self._save(sub.id, last_seen=unseen[-1]["id"])
+            self._save(sub.id, last_seen=post["id"])
 
 
 async def setup(bot: commands.Bot):
