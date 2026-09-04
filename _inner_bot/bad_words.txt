@@ -76,7 +76,6 @@ bekloppt
 bescheuert
 hirnlos
 dämlich
-dummkopf
 
 # ── Deutsch – Fäkalsprache ──
 scheise
@@ -248,7 +247,6 @@ clown
 creep
 creepy
 weirdo
-loser
 sucker
 jerkface
 
@@ -376,10 +374,8 @@ n1gger
 f4ggot
 
 # ── Bedrohliche / aggressive Chatbegriffe ──
-# Nicht jede Zeile bedeutet automatisch eine echte Gefahr; sie dient als
-# Moderationssignal und kann später separat bewertet werden.
-kill yourself
-kys
+# Diese Kategorie ist nur ein Moderationssignal und ersetzt keine echte
+# Bewertung des Kontextes.
 kill you
 im gonna kill you
 i will kill you
