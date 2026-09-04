@@ -1,0 +1,21 @@
+# Secrets
+.env
+_inner_bot/.env
+
+# Runtime data
+data/
+_inner_bot/data/
+_inner_bot/transcripts/*.txt
+_inner_bot/transcripts/*.html
+_inner_bot/transcripts/*/*
+
+# Logs
+*.log
+_inner_bot/bot.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
