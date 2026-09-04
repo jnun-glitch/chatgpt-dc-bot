@@ -61,14 +61,13 @@ def test_latest_unseen_accepts_first_poll():
     assert [item["id"] for item in latest_unseen(items, None)] == ["10", "11"]
 
 
-def test_latest_unseen_excludes_seen_item():
+def test_latest_unseen_does_not_repost_items_before_seen_marker():
     items = [
         {"id": "10", "published": "2026-01-01"},
         {"id": "11", "published": "2026-01-02"},
         {"id": "12", "published": "2026-01-03"},
     ]
-    result = latest_unseen(items, "11")
-    assert [item["id"] for item in result] == ["10", "12"]
+    assert [item["id"] for item in latest_unseen(items, "11")] == ["12"]
 
 
 def test_latest_unseen_handles_missing_dates():
@@ -76,11 +75,10 @@ def test_latest_unseen_handles_missing_dates():
     assert [item["id"] for item in latest_unseen(items, None)] == ["1", "2"]
 
 
-def test_latest_unseen_keeps_duplicates_out_when_same_id_repeats():
+def test_latest_unseen_collapses_duplicate_ids():
     items = [
         {"id": "1", "published": "2026-01-01"},
         {"id": "1", "published": "2026-01-02"},
         {"id": "2", "published": "2026-01-03"},
     ]
-    result = latest_unseen(items, None)
-    assert [item["id"] for item in result] == ["1", "1", "2"]
+    assert [item["id"] for item in latest_unseen(items, None)] == ["1", "2"]
