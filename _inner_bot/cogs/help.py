@@ -1,244 +1,176 @@
-"""Help: Interaktive Hilfe mit Suchfunktion für alle Bot-Commands."""
+"""Dynamic help system that reads currently loaded Discord commands."""
+from __future__ import annotations
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-HELP_CATEGORIES = {
-    'moderation': (
-        '\U0001f6e1\ufe0f Moderation',
-        [
-            ('ban', 'Bannt einen User vom Server'),
-            ('unban', 'Entbannt einen User'),
-            ('kick', 'Kickt einen User vom Server'),
-            ('timeout', 'Setzt einen User Timeout'),
-            ('untimeout', 'Entfernt den Timeout eines Users'),
-            ('warn', 'Gibt einer Verwarnung'),
-            ('purge', 'Löscht Nachrichten im Kanal'),
-            ('purge-user', 'Löscht Nachrichten eines bestimmten Users'),
-            ('lock', 'Sperren eines Kanals'),
-            ('unlock', 'Entsperren eines Kanals'),
-            ('role', 'Rollenverwaltung'),
-        ],
-    ),
-    'admin': (
-        '\u2699\ufe0f Admin',
-        [
-            ('status', 'Zeige Bot-Status und Statistiken'),
-            ('reload', 'Lädt eine Erweiterung neu'),
-            ('test', 'Testet eine Bot-Funktion'),
-            ('setup-smp', 'Richtet den SMP-Modus ein'),
-            ('setup-roles', 'Erstellt Standard-Rollen'),
-            ('updates', 'Zeigt aktuelle Updates'),
-            ('dashboard', 'Öffnet das Bot-Dashboard'),
-            ('xp-reset', 'Setzt die XP eines Users zurück'),
-        ],
-    ),
-    'community': (
-        '\U0001f465 Community',
-        [
-            ('ticket', 'Erstellt ein Support-Ticket'),
-            ('suggestion', 'Schlage eine Änderung vor'),
-            ('schematics', 'Verwalte Schematics'),
-            ('level', 'Zeige dein aktuelles Level'),
-            ('rank', 'Zeige dein Rang-Card'),
-            ('leaderboard', 'Zeige die Top-Spieler'),
-        ],
-    ),
-    'fun': (
-        '\U0001f3ae Fun',
-        [
-            ('roll', 'Würfle mit einem Würfel'),
-            ('coinflip', 'Wirf eine Münze'),
-            ('meme', 'Zeige ein zufälliges Meme'),
-            ('trivia', 'Starte eine Quiz-Runde'),
-            ('8ball', 'Stelle eine Ja/Nein-Frage'),
-            ('joke', 'Erzähle einen Witz'),
-            ('rps', 'Spiele Stein-Schere-Papier'),
-            ('slot', 'Ziehe am Slot-Automaten'),
-            ('guess', 'Rat eine Zahl'),
-        ],
-    ),
-    'support': (
-        '\U0001f6df Support',
-        [
-            ('ticket', 'Erstelle ein Support-Ticket'),
-            ('suggestion', 'Schlage eine Änderung vor'),
-        ],
-    ),
-    'stats': (
-        '\U0001f4ca Stats',
-        [
-            ('stats', 'Zeige Server-Statistiken'),
-            ('system', 'Zeige System-Infos'),
-            ('growth', 'Zeige Wachstums-Statistiken'),
-        ],
-    ),
-    'schematics': (
-        '\U0001f3d7\ufe0f Schematics',
-        [
-            ('schematics add', 'Füge ein Schematic hinzu'),
-            ('schematics remove', 'Entferne ein Schematic'),
-            ('schematics list', 'Zeige alle Schematics'),
-            ('schematics panel', 'Öffne das Schematics-Panel'),
-        ],
-    ),
-    'giveaways': (
-        '\U0001f389 Giveaways',
-        [
-            ('giveaway start', 'Starte ein Giveaway'),
-            ('giveaway reroll', 'Ziehe einen neuen Gewinner'),
-            ('giveaway list', 'Zeige aktive Giveaways'),
-        ],
-    ),
-    'reactionroles': (
-        '\U0001f3ad Reaction Roles',
-        [
-            ('reactionroles create', 'Erstelle ein Reaction-Rollen-Panel'),
-            ('reactionroles remove', 'Entferne ein Reaction-Rollen-Panel'),
-            ('reactionroles list', 'Zeige alle Reaction-Rollen-Panels'),
-        ],
-    ),
-    'automod': (
-        '\U0001f916 Auto-Moderation',
-        [
-            ('automod config', 'Konfiguriere Auto-Moderation'),
-        ],
-    ),
+
+CATEGORY_EMOJIS = {
+    "moderation": "🛡️",
+    "admin": "⚙️",
+    "ticket": "🎫",
+    "automod": "🤖",
+    "music": "🎵",
+    "voice": "🎙️",
+    "server": "🌐",
+    "level": "⭐",
+    "giveaway": "🎉",
+    "reactionroles": "🎭",
+    "schematics": "🏗️",
 }
 
 
-def _build_main_embed() -> discord.Embed:
-    """Erstelle das Haupt-Hilfe-Embed."""
+def _root_name(command) -> str:
+    qualified = getattr(command, "qualified_name", getattr(command, "name", "unknown"))
+    return str(qualified).split()[0].lower()
+
+
+def _description(command) -> str:
+    return getattr(command, "description", None) or getattr(command, "help", None) or "Keine Beschreibung"
+
+
+def _all_app_commands(bot: commands.Bot):
+    return [cmd for cmd in bot.tree.walk_commands() if not isinstance(cmd, app_commands.Group)]
+
+
+def _all_prefix_commands(bot: commands.Bot):
+    return list(bot.walk_commands())
+
+
+def _all_entries(bot: commands.Bot):
+    entries = []
+    seen = set()
+    for command in _all_app_commands(bot):
+        key = ("/", getattr(command, "qualified_name", command.name))
+        if key not in seen:
+            seen.add(key)
+            entries.append((key, "/" + key[1], _description(command), _root_name(command)))
+    for command in _all_prefix_commands(bot):
+        if getattr(command, "hidden", False):
+            continue
+        key = ("!", getattr(command, "qualified_name", command.name))
+        if key not in seen:
+            seen.add(key)
+            entries.append((key, "!" + key[1], _description(command), _root_name(command)))
+    return sorted(entries, key=lambda x: x[1].casefold())
+
+
+def _categories(bot: commands.Bot):
+    categories = {}
+    for _key, name, desc, root in _all_entries(bot):
+        categories.setdefault(root, []).append((name, desc))
+    return categories
+
+
+def _build_main_embed(bot: commands.Bot) -> discord.Embed:
+    entries = _all_entries(bot)
+    cats = _categories(bot)
+    preview = []
+    for root, commands_list in sorted(cats.items(), key=lambda item: item[0]):
+        emoji = CATEGORY_EMOJIS.get(root, "📦")
+        preview.append(f"{emoji} **{root.title()}** — {len(commands_list)} Commands")
     embed = discord.Embed(
-        title='\U0001f4d6 ScratchAI Hilfe',
+        title="📚 ScratchAI Hilfe",
         description=(
-            'Wähle eine Kategorie aus dem Dropdown-Menü unten, '
-            'oder nutze `/help <Kategorie>` für sofortige Hilfe.\n\n'
-            '**Suche:** Nutze `/help search <Begriff>` um Commands zu durchsuchen.'
+            "Die Hilfe wird automatisch aus den aktuell geladenen Cogs aufgebaut.\n\n"
+            + "\n".join(preview[:20])
+            + f"\n\n**Insgesamt:** {len(entries)} Commands\n"
+            "Nutze `/help category:<name>` oder `/help query:<begriff>`."
         ),
         color=discord.Color.blurple(),
     )
-    for key, (title, _) in HELP_CATEGORIES.items():
-        embed.add_field(name=title, value=f'`/help {key}`', inline=True)
-    embed.set_footer(text='ScratchAI Help System')
+    embed.set_footer(text="Dynamisches Help-System")
     return embed
 
 
-def _build_category_embed(key: str) -> discord.Embed:
-    """Erstelle ein Embed für eine bestimmte Kategorie."""
-    title, commands_list = HELP_CATEGORIES[key]
-    embed = discord.Embed(
-        title=f'{title} – Commands',
-        color=discord.Color.blurple(),
-    )
-    for name, desc in commands_list:
-        embed.add_field(name=f'`/{name}`', value=desc, inline=False)
-    embed.set_footer(text=f'Nutze /help search <Begriff> zum Suchen')
+def _build_category_embed(bot: commands.Bot, key: str) -> discord.Embed | None:
+    cats = _categories(bot)
+    matches = cats.get(key.casefold())
+    if not matches:
+        return None
+    emoji = CATEGORY_EMOJIS.get(key.casefold(), "📦")
+    embed = discord.Embed(title=f"{emoji} {key.title()}", color=discord.Color.blurple())
+    for name, desc in matches[:25]:
+        embed.add_field(name=f"`{name}`", value=desc, inline=False)
+    if len(matches) > 25:
+        embed.set_footer(text=f"… und {len(matches) - 25} weitere Commands")
     return embed
 
 
-def _search_commands(query: str) -> list[tuple[str, str, str]]:
-    """Durchsuche alle Commands nach Name oder Beschreibung."""
-    results = []
-    q = query.lower()
-    for cat_key, (cat_title, cmds) in HELP_CATEGORIES.items():
-        for name, desc in cmds:
-            if q in name.lower() or q in desc.lower():
-                results.append((cat_title, name, desc))
-    return results
+def _search(bot: commands.Bot, query: str):
+    q = query.casefold()
+    return [
+        (name, desc, root)
+        for _key, name, desc, root in _all_entries(bot)
+        if q in name.casefold() or q in desc.casefold() or q in root.casefold()
+    ]
 
 
 class HelpSelect(discord.ui.Select):
-    """Dropdown-Menü zur Auswahl einer Help-Kategorie."""
-
-    def __init__(self):
-        options = [
-            discord.SelectOption(label=title.replace('\u200b', ''), value=key, emoji=title[0] if len(title) > 1 else None)
-            for key, (title, _) in HELP_CATEGORIES.items()
-        ]
-        super().__init__(
-            placeholder='Wähle eine Kategorie…',
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        options = []
+        for key in sorted(_categories(bot))[:25]:
+            options.append(discord.SelectOption(
+                label=key.title()[:100],
+                value=key,
+                emoji=CATEGORY_EMOJIS.get(key, "📦"),
+            ))
+        if not options:
+            options = [discord.SelectOption(label="Keine Commands", value="none", emoji="❌")]
+        super().__init__(placeholder="Wähle eine Kategorie…", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         key = self.values[0]
-        embed = _build_category_embed(key)
-        await interaction.response.edit_message(embed=embed, view=HelpView())
+        embed = _build_category_embed(self.bot, key)
+        if embed is None:
+            await interaction.response.send_message("Kategorie nicht gefunden.", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=embed, view=HelpView(self.bot))
 
 
 class HelpView(discord.ui.View):
-    """Persistente View mit Dropdown für die Hilfe."""
-
-    def __init__(self):
+    def __init__(self, bot: commands.Bot):
         super().__init__(timeout=120)
-        self.add_item(HelpSelect())
+        self.bot = bot
+        self.add_item(HelpSelect(bot))
 
-    @discord.ui.button(label='\U0001f3e0 Hauptmenü', style=discord.ButtonStyle.secondary, row=1)
-    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = _build_main_embed()
-        await interaction.response.edit_message(embed=embed, view=HelpView())
-
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
+    @discord.ui.button(label="🏠 Hauptmenü", style=discord.ButtonStyle.secondary, row=1)
+    async def home(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=_build_main_embed(self.bot), view=HelpView(self.bot))
 
 
 class HelpCog(commands.Cog):
-    """Interaktive Hilfe mit Suchfunktion."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name='help', description='Zeige die interaktive Hilfe')
-    @app_commands.describe(category='Kategorie für sofortige Hilfe', query='Suchbegriff für Command-Suche')
-    async def cmd_help(
-        self,
-        interaction: discord.Interaction,
-        category: str | None = None,
-        query: str | None = None,
-    ):
+    @app_commands.command(name="help", description="Zeigt die dynamische Hilfe")
+    @app_commands.describe(category="Kategorie bzw. Command-Gruppe", query="Command oder Beschreibung durchsuchen")
+    async def cmd_help(self, interaction: discord.Interaction, category: str | None = None, query: str | None = None):
         if query:
-            await self._handle_search(interaction, query)
-            return
-        if category:
-            key = category.lower().strip()
-            if key in HELP_CATEGORIES:
-                embed = _build_category_embed(key)
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-            else:
-                embed = discord.Embed(
-                    title='Kategorie nicht gefunden',
-                    description=f'`{category}` existiert nicht.\nVerfügbare Kategorien: {", ".join(HELP_CATEGORIES.keys())}',
-                    color=discord.Color.red(),
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        embed = _build_main_embed()
-        await interaction.response.send_message(embed=embed, view=HelpView(), ephemeral=True)
-
-    async def _handle_search(self, interaction: discord.Interaction, query: str):
-        """Behandle die Suche nach Commands."""
-        results = _search_commands(query)
-        if not results:
-            embed = discord.Embed(
-                title='Keine Ergebnisse',
-                description=f'Für `{query}` wurden keine Commands gefunden.',
-                color=discord.Color.orange(),
-            )
+            results = _search(self.bot, query)
+            if not results:
+                await interaction.response.send_message(f"Keine Commands für `{query}` gefunden.", ephemeral=True)
+                return
+            embed = discord.Embed(title=f"🔎 Suche: {query}", color=discord.Color.blurple())
+            for name, desc, root in results[:25]:
+                embed.add_field(name=f"`{name}`", value=f"{desc}\n*Kategorie: {root}*", inline=False)
+            if len(results) > 25:
+                embed.set_footer(text=f"… und {len(results) - 25} weitere Treffer")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        embed = discord.Embed(
-            title=f'Suchergebnisse für "{query}"',
-            color=discord.Color.blurple(),
-        )
-        for cat_title, name, desc in results[:25]:
-            embed.add_field(name=f'`/{name}`', value=f'{desc}\n*Kategorie: {cat_title}*', inline=False)
-        if len(results) > 25:
-            embed.set_footer(text=f'…und {len(results) - 25} weitere Ergebnisse')
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if category:
+            embed = _build_category_embed(self.bot, category)
+            if embed is None:
+                categories = ", ".join(sorted(_categories(self.bot))) or "Keine"
+                await interaction.response.send_message(f"Kategorie nicht gefunden. Verfügbar: {categories}", ephemeral=True)
+                return
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.send_message(embed=_build_main_embed(self.bot), view=HelpView(self.bot), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
