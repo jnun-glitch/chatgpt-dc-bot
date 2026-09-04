@@ -2,34 +2,43 @@
 
 Stand: 4. September 2026
 
-## ✅ Bereits umgesetzt / gehärtet
+## ✅ Bereits umgesetzt
+- [x] Modularer Cog-Aufbau + automatisches Cog-Laden
+- [x] SQLite-Performance, WAL, Caching und Indizes
+- [x] Rollen-/Staff-Sicherheit
+- [x] `/setup-smp` + `/setup-roles`
+- [x] AutoMod + Audit-Logging
+- [x] Tickets + AI-Anbindung
+- [x] Musik + Voice-Transkription
+- [x] AI-Rate-Limits + Fehlerbehandlung
+- [x] Erweiterte AI-, Voice-, Musik-, DB- und Cog-Import-Tests
+- [x] CI-Dependency-Fehler bei `discord-ext-voice-recv` behoben
+- [x] YouTube-/Twitch-/X-Creator-Alerts als eigener Social-Cog
 
-- [x] Modularer Cog-Aufbau und automatisches Cog-Laden
-- [x] SQLite-Performance: WAL, Connection-Caching, Indizes und Retention
-- [x] Sichere Rollen-Hierarchie und Staff-Channel-Absicherung
-- [x] `/setup-smp` und `/setup-roles` für reproduzierbares Server-Setup
-- [x] Erweiterter AutoMod inkl. URL-/Invite-/Spam-/Raid-Prüfungen
-- [x] Audit-Logging für wichtige Serverevents
-- [x] Ticket-System mit Transkripten und AI-Anbindung
-- [x] Musik-Steuerung mit Voice-/Player-Berechtigungsprüfung
-- [x] Lokale Voice-Transkription mit faster-whisper
-- [x] Nicht-punitiver Voice-AutoMod-Review über `#bad-word-log`
-- [x] Dashboard mit Live-Ansicht, Audit-Daten und Serververwaltung
-- [x] AI-Rate-Limit pro Server + Benutzer mit aktivem Speicher-Cleanup
-- [x] AI-Fehler werden nicht mehr als rohe Fehlermeldungen an Benutzer weitergegeben
-- [x] CI: Dependency-Check, Compile-Smoke-Test, Pytest und Bot-Import
-- [x] Zusätzliche AI- und Voice-Testabdeckung
+## 🔥 Aktueller Fokus
+- [x] YouTube neue Videos
+- [x] Twitch Live-Alerts
+- [x] X neue Posts
+- [x] Persistenter Duplikat-Schutz
+- [x] Optionale Rollen-Pings
+- [ ] YouTube Live/Premiere gezielt unterscheiden
+- [ ] Twitch Titel-/Kategorieänderungen erkennen
+- [ ] Social API Rate-Limit/Backoff
+- [ ] Social-Alert Status-/Fehlerbefehl
 
-## 🔜 Nächste Ausbaustufe
+## 🔜 Danach
+- [ ] Moderation 2.0: Warnhistorie, Anti-Raid, Anti-Spam
+- [ ] AI 2.0: Retry/Timeout und Provider-Handling
+- [ ] Tickets 2.0: Zusammenfassungen, Priorität, Staff-Zuweisung
+- [ ] Community: Achievements, Streaks, Level-Ausbau
+- [ ] Events: Giveaways, Umfragen, Erinnerungen
+- [ ] Musik 2.0: Playlists, Favoriten, Queue-Ausbau
+- [ ] Voice 2.0: bessere Session-Verwaltung
+- [ ] Observability + Performance
 
-- [ ] Dashboard: feinere Server-/Feature-Konfiguration und sichere Authentifizierung über Discord OAuth
-- [ ] Voice: konfigurierbare Transkriptionskanäle und bessere Session-Verwaltung
-- [ ] AI: robuste Retry-/Timeout-Schicht und bessere Provider-Statusanzeige
-- [ ] Tests: mehr Mock-Tests für Discord Events, Tickets, Dashboard und Datenbank-Retention
-- [ ] CI/CD: Release-Workflow, reproduzierbare Dependency-Versionen und Deployment-Smoke-Test
-- [ ] Observability: strukturierte Metriken für Command-Latenz, Fehler und aktive Voice-Sessions
-- [ ] Performance: weitere DB-Abfragen bündeln und unnötige API-Aufrufe reduzieren
+## 🚫 Vorerst nicht priorisiert
+- Dashboard-Ausbau
+- Minecraft-Connector
 
 ## 🎯 Ziel
-
-Der Bot soll stabil, sicher und modular genug sein, dass neue Features ergänzt werden können, ohne bestehende SMP-/Community-Funktionen zu gefährden.
+Ein stabiler, modularer All-in-One-Discord-Bot mit starken Moderations-, Community-, AI-, Musik-, Voice- und Creator-Funktionen.
