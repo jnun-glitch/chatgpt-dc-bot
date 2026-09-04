@@ -1,12 +1,14 @@
 """Zentrales Logging für den Bot."""
-from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-# Logging darf config.py nicht importieren, weil config.py selbst den Logger
-# für Warnungen beim Einlesen der Umgebungsvariablen benötigt. Dadurch vermeiden
-# wir einen Circular Import beim Bot-Start.
+from dotenv import load_dotenv
+
+# Logging wird vor den eigentlichen Anwendungsmodulen importiert. Deshalb lädt
+# dieses Modul die lokale .env selbst, ohne config.py zu importieren.
 BOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BOT_DIR / ".env", override=False)
 
 _formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
