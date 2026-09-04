@@ -1,9 +1,4 @@
-"""Local Discord voice transcription with faster-whisper.
-
-Audio is processed in memory only. Text transcripts are persisted below
-``transcripts/<guild_id>/<date>/`` and the filename always contains the names
-of every speaker who has spoken in that session.
-"""
+"""Local Discord voice transcription with non-punitive Voice AutoMod review alerts."""
 
 import asyncio
 import io
@@ -19,6 +14,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands, voice_recv
 
+from core.badwords import find_bad_word
+from core.channelnames import find_channel
+from core.permissions import can_manage_bot
+
 try:
     from faster_whisper import WhisperModel
 except Exception:
@@ -29,6 +28,7 @@ WHISPER_MODEL = os.environ.get("VOICE_WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.environ.get("VOICE_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("VOICE_WHISPER_COMPUTE_TYPE", "int8")
 TRANSCRIPTS_DIR = Path(os.environ.get("TRANSCRIPTS_DIR", "transcripts"))
+VOICE_REVIEW_COOLDOWN = max(10, int(os.environ.get("VOICE_REVIEW_COOLDOWN", "30")))
 
 
 class TranscriptionSink(voice_recv.AudioSink):
@@ -68,6 +68,7 @@ class VoiceCog(commands.Cog):
         self.sessions = {}
         self._model = None
         self._model_lock = threading.Lock()
+        self._review_last_alert = {}
 
     def _get_model(self):
         if WhisperModel is None:
@@ -99,9 +100,6 @@ class VoiceCog(commands.Cog):
         new_path = self._path(session)
         old_path = session.get("path")
         new_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # If another person starts talking, rename the live transcript so the
-        # filename always contains all speakers who have talked in the session.
         if old_path and old_path.exists() and old_path != new_path:
             try:
                 old_path.rename(new_path)
@@ -110,7 +108,6 @@ class VoiceCog(commands.Cog):
                     with old_path.open("r", encoding="utf-8") as src, new_path.open("a", encoding="utf-8") as dst:
                         dst.write(src.read())
                     old_path.unlink(missing_ok=True)
-
         if not new_path.exists():
             speakers = ", ".join(sorted(session["speakers"].values(), key=str.casefold))
             new_path.write_text(
@@ -118,21 +115,68 @@ class VoiceCog(commands.Cog):
                 f"Server-ID: {session['guild_id']}\n"
                 f"Start: {session['started_at'].isoformat(timespec='seconds')}\n"
                 f"Sprecher: {speakers}\n"
-                f"{'=' * 60}\n\n",
-                encoding="utf-8",
-            )
+                f"{'=' * 60}\n\n", encoding="utf-8")
         timestamp = datetime.now().strftime("%H:%M:%S")
         with new_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {speaker}: {text}\n")
         session["path"] = new_path
 
+    async def _send_review_alert(self, session, user, text):
+        """Meldet einen möglichen Voice-Verstoß nur zur menschlichen Prüfung."""
+        word = find_bad_word(text)
+        if not word:
+            return
+        if user.guild_permissions.administrator or user.guild_permissions.manage_guild:
+            return
+        role = discord.utils.get(session["guild"].roles, name="Moderator")
+        if role is None:
+            return
+        key = (session["guild_id"], int(user.id), word.casefold())
+        now = asyncio.get_running_loop().time()
+        last = self._review_last_alert.get(key, 0.0)
+        if now - last < VOICE_REVIEW_COOLDOWN:
+            return
+        self._review_last_alert[key] = now
+
+        review = find_channel(session["guild"], "bad-word-log")
+        if not isinstance(review, discord.TextChannel):
+            return
+        clean_user = discord.utils.escape_markdown(user.display_name)
+        clean_text = discord.utils.escape_markdown(text[:1500])
+        embed = discord.Embed(
+            title="🎙️ Voice AutoMod – Prüfung erforderlich",
+            description=clean_text,
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_author(name=f"{user} ({user.id})", icon_url=user.display_avatar.url)
+        embed.add_field(name="Voice-Channel", value=session["vc"].channel.mention, inline=True)
+        embed.add_field(name="Erkannte Regel", value=f"`{discord.utils.escape_markdown(word)}`", inline=True)
+        embed.add_field(name="Aktion", value="Keine automatische Strafe – bitte manuell prüfen.", inline=False)
+        try:
+            await review.send(
+                content=role.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+            )
+        except discord.HTTPException:
+            pass
+
+    @staticmethod
+    def _has_manage_permission(interaction):
+        return isinstance(interaction.user, discord.Member) and can_manage_bot(interaction.user)
+
     @voice.command(name="join", description="Bot kommt in deinen Voice-Channel")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def join(self, interaction: discord.Interaction):
+        if not self._has_manage_permission(interaction):
+            await interaction.response.send_message("❌ Nur Server-Admins/Manager dürfen Voice-Überwachung starten.", ephemeral=True)
+            return
         if not interaction.guild or not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message("Du musst auf einem Server in einem Voice-Channel sein.", ephemeral=True)
             return
         channel = interaction.user.voice.channel
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         vc = interaction.guild.voice_client
         try:
             if vc and vc.is_connected():
@@ -140,12 +184,16 @@ class VoiceCog(commands.Cog):
                     await vc.move_to(channel)
             else:
                 await channel.connect(cls=voice_recv.VoiceRecvClient)
-            await interaction.followup.send(f"🔊 Ich bin jetzt in **{channel.name}**.")
+            await interaction.followup.send(f"🔊 Ich bin jetzt in **{channel.name}**.", ephemeral=True)
         except Exception as exc:
-            await interaction.followup.send(f"❌ Voice-Verbindung fehlgeschlagen: `{str(exc)[:300]}`")
+            await interaction.followup.send(f"❌ Voice-Verbindung fehlgeschlagen: `{str(exc)[:300]}`", ephemeral=True)
 
     @voice.command(name="leave", description="Bot verlässt den Voice-Channel")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def leave(self, interaction: discord.Interaction):
+        if not self._has_manage_permission(interaction):
+            await interaction.response.send_message("❌ Nur Server-Admins/Manager dürfen Voice-Überwachung stoppen.", ephemeral=True)
+            return
         session = self.sessions.pop(interaction.guild_id, None)
         if session:
             session["enabled"] = False
@@ -159,11 +207,15 @@ class VoiceCog(commands.Cog):
                 await vc.disconnect()
             except Exception:
                 pass
-        await interaction.response.send_message("👋 Voice verlassen und Transkription beendet.")
+        await interaction.response.send_message("👋 Voice verlassen und Transkription beendet.", ephemeral=True)
 
     @voice.command(name="transcribe", description="Startet oder stoppt die Live-Transkription")
     @app_commands.describe(enabled="True = starten, False = stoppen", channel="Textkanal für das Live-Transkript")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def transcribe(self, interaction: discord.Interaction, enabled: bool, channel: discord.TextChannel | None = None):
+        if not self._has_manage_permission(interaction):
+            await interaction.response.send_message("❌ Nur Server-Admins/Manager dürfen Voice-Überwachung starten.", ephemeral=True)
+            return
         if not interaction.guild:
             await interaction.response.send_message("Nur auf einem Server möglich.", ephemeral=True)
             return
@@ -180,11 +232,9 @@ class VoiceCog(commands.Cog):
                 except Exception:
                     pass
                 path = session.get("path")
-                await interaction.response.send_message(
-                    "🛑 Transkription gestoppt." + (f" Gespeichert: `{path}`" if path else " Noch kein Text erkannt.")
-                )
+                await interaction.response.send_message("🛑 Transkription gestoppt." + (f" Gespeichert: `{path}`" if path else " Noch kein Text erkannt."), ephemeral=True)
             else:
-                await interaction.response.send_message("🛑 Es läuft keine Transkription.")
+                await interaction.response.send_message("🛑 Es läuft keine Transkription.", ephemeral=True)
             return
 
         try:
@@ -213,20 +263,15 @@ class VoiceCog(commands.Cog):
         if old:
             old["enabled"] = False
             try:
-                vc.stop_listening()
+                old["vc"].stop_listening()
             except Exception:
                 pass
 
         now = datetime.now()
         session = {
-            "enabled": True,
-            "vc": vc,
-            "channel": target,
-            "guild_id": interaction.guild_id,
-            "started_at": now,
-            "speakers": {},
-            "path": None,
-            "current_user_id": None,
+            "enabled": True, "vc": vc, "channel": target, "guild": interaction.guild,
+            "guild_id": interaction.guild_id, "started_at": now, "speakers": {},
+            "path": None, "current_user_id": None,
         }
         loop = asyncio.get_running_loop()
 
@@ -242,6 +287,7 @@ class VoiceCog(commands.Cog):
             if not text:
                 return
             self._save_line(session, user.display_name, text)
+            await self._send_review_alert(session, user, text)
             try:
                 await target.send(f"🎙️ **{discord.utils.escape_markdown(user.display_name)}:** {text[:1800]}")
             except discord.HTTPException:
@@ -254,7 +300,7 @@ class VoiceCog(commands.Cog):
         await interaction.response.send_message(
             f"📝 **Live-Transkription gestartet!** Ausgabe: {target.mention}\n"
             f"💾 Dateien: `{self._folder(session)}`\n"
-            "🤖 Speech-to-Text läuft lokal mit faster-whisper – kein OpenAI nötig."
+            "🛡️ Voice AutoMod: mögliche Treffer werden nur zur manuellen Prüfung in #bad-word-log gemeldet und lösen keine automatische Strafe aus."
         )
 
     @voice.command(name="status", description="Zeigt den Voice-Status")
@@ -262,17 +308,21 @@ class VoiceCog(commands.Cog):
         vc = interaction.guild.voice_client if interaction.guild else None
         session = self.sessions.get(interaction.guild_id)
         if not vc or not vc.is_connected():
-            await interaction.response.send_message("🔴 Nicht im Voice-Channel")
+            await interaction.response.send_message("🔴 Nicht im Voice-Channel", ephemeral=True)
             return
         text = f"🟢 **{vc.channel.name}**\n📝 Transkription: **{'AN' if session and session.get('enabled') else 'AUS'}**"
         if session:
             text += f"\n👥 Sprecher: {len(session['speakers'])}"
             if session.get("path"):
                 text += f"\n💾 `{session['path'].name}`"
-        await interaction.response.send_message(text)
+        await interaction.response.send_message(text, ephemeral=True)
 
     @voice.command(name="history", description="Zeigt die gespeicherten Transkripte dieses Servers")
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def history(self, interaction: discord.Interaction):
+        if not self._has_manage_permission(interaction):
+            await interaction.response.send_message("❌ Nur Server-Admins/Manager dürfen Transkript-History sehen.", ephemeral=True)
+            return
         folder = TRANSCRIPTS_DIR / str(interaction.guild_id)
         files = sorted(folder.rglob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.exists() else []
         if not files:
@@ -283,8 +333,11 @@ class VoiceCog(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @voice.command(name="clear", description="Löscht alle Transkripte dieses Servers")
-    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def clear(self, interaction: discord.Interaction):
+        if not self._has_manage_permission(interaction):
+            await interaction.response.send_message("❌ Nur Server-Admins/Manager dürfen Transkripte löschen.", ephemeral=True)
+            return
         folder = TRANSCRIPTS_DIR / str(interaction.guild_id)
         count = 0
         if folder.exists():
