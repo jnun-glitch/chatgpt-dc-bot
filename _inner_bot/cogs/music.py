@@ -17,6 +17,7 @@ from discord.ext import commands
 
 from core.config import MUSIC_DISABLED_MSG
 from core.logging import logger
+from core.permissions import can_manage_bot
 
 try:
     import yt_dlp
@@ -130,6 +131,21 @@ class MusicCog(commands.Cog):
     def _disabled_embed():
         return discord.Embed(title="🎵 Musik nicht verfügbar", description=MUSIC_DISABLED_MSG, color=discord.Color.red())
 
+    @staticmethod
+    def _same_voice_channel(interaction: discord.Interaction, player: MusicPlayer | None) -> bool:
+        """Prevent users in other voice channels from controlling the player."""
+        if not player or not player.vc or not player.vc.is_connected():
+            return False
+        user_voice = getattr(interaction.user, "voice", None)
+        return bool(user_voice and user_voice.channel and player.vc.channel and user_voice.channel.id == player.vc.channel.id)
+
+    async def _can_control(self, interaction: discord.Interaction, player: MusicPlayer | None) -> bool:
+        if not interaction.guild or player is None:
+            return False
+        if can_manage_bot(interaction.user):
+            return True
+        return self._same_voice_channel(interaction, player)
+
     async def _get_player(self, interaction: discord.Interaction, connect: bool = False) -> MusicPlayer | None:
         guild = interaction.guild
         if not guild:
@@ -145,12 +161,21 @@ class MusicCog(commands.Cog):
             return None
         if vc and vc.is_connected():
             if vc.channel.id != interaction.user.voice.channel.id:
+                # Do not let ordinary users hijack the bot from another channel.
+                if not can_manage_bot(interaction.user):
+                    return None
                 await vc.move_to(interaction.user.voice.channel)
         else:
             vc = await interaction.user.voice.channel.connect()
         player = MusicPlayer(guild.id, vc, asyncio.get_running_loop())
         PLAYERS[guild.id] = player
         return player
+
+    async def _deny(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "❌ Du musst im selben Voice-Channel wie der Bot sein (oder den Bot verwalten).",
+            ephemeral=True,
+        )
 
     @app_commands.command(name="play", description="Spielt einen Song oder Link ab")
     @app_commands.describe(query="Songname oder unterstützter Musik-Link")
@@ -161,12 +186,16 @@ class MusicCog(commands.Cog):
         if not interaction.guild or not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message("Du musst in einem Voice-Channel sein.", ephemeral=True)
             return
+        existing = PLAYERS.get(interaction.guild.id)
+        if existing and not await self._can_control(interaction, existing):
+            await self._deny(interaction)
+            return
         await interaction.response.defer()
         try:
             url, title, webpage = await asyncio.to_thread(_search, query)
             player = await self._get_player(interaction, connect=True)
             if player is None:
-                raise RuntimeError("Voice-Verbindung konnte nicht hergestellt werden.")
+                raise RuntimeError("Voice-Verbindung konnte nicht hergestellt werden oder der Bot ist in einem anderen Voice-Channel.")
             track = {"url": url, "title": title, "webpage": webpage, "requester": interaction.user.display_name}
             if player.current:
                 player.queue.append(track)
@@ -182,7 +211,10 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="pause", description="Pausiert die Musik")
     async def pause(self, interaction: discord.Interaction):
         player = PLAYERS.get(interaction.guild_id)
-        if not player or not player.vc.is_playing():
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
+        if not player.vc.is_playing():
             await interaction.response.send_message("Nichts läuft.", ephemeral=True)
             return
         player.vc.pause()
@@ -191,7 +223,10 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="resume", description="Setzt die Musik fort")
     async def resume(self, interaction: discord.Interaction):
         player = PLAYERS.get(interaction.guild_id)
-        if not player or not player.vc.is_paused():
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
+        if not player.vc.is_paused():
             await interaction.response.send_message("Die Musik ist nicht pausiert.", ephemeral=True)
             return
         player.vc.resume()
@@ -200,7 +235,10 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="skip", description="Überspringt den aktuellen Song")
     async def skip(self, interaction: discord.Interaction):
         player = PLAYERS.get(interaction.guild_id)
-        if not player or not player.current:
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
+        if not player.current:
             await interaction.response.send_message("Nichts läuft.", ephemeral=True)
             return
         player.vc.stop()
@@ -208,6 +246,10 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="stop", description="Stoppt die Musik und leert die Queue")
     async def stop(self, interaction: discord.Interaction):
+        player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         player = PLAYERS.pop(interaction.guild_id, None)
         if not player:
             await interaction.response.send_message("Keine Musik-Session aktiv.", ephemeral=True)
@@ -240,6 +282,9 @@ class MusicCog(commands.Cog):
     @app_commands.describe(position="Position in der Queue, beginnend bei 1")
     async def remove(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 100]):
         player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         if not player or position > len(player.queue):
             await interaction.response.send_message("Diese Queue-Position existiert nicht.", ephemeral=True)
             return
@@ -249,6 +294,9 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="clear", description="Leert die Warteschlange")
     async def clear(self, interaction: discord.Interaction):
         player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         if not player:
             await interaction.response.send_message("Queue ist bereits leer.", ephemeral=True)
             return
@@ -259,6 +307,9 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="shuffle", description="Mischt die Warteschlange")
     async def shuffle(self, interaction: discord.Interaction):
         player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         if not player or len(player.queue) < 2:
             await interaction.response.send_message("Nicht genug Titel zum Mischen.", ephemeral=True)
             return
@@ -269,6 +320,9 @@ class MusicCog(commands.Cog):
     @app_commands.describe(enabled="Repeat an oder aus")
     async def loop(self, interaction: discord.Interaction, enabled: bool):
         player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         if not player or not player.current:
             await interaction.response.send_message("Nichts läuft.", ephemeral=True)
             return
@@ -279,6 +333,9 @@ class MusicCog(commands.Cog):
     @app_commands.describe(percent="0 bis 100")
     async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 100]):
         player = PLAYERS.get(interaction.guild_id)
+        if not await self._can_control(interaction, player):
+            await self._deny(interaction)
+            return
         if not player:
             await interaction.response.send_message("Keine Musik-Session aktiv.", ephemeral=True)
             return
