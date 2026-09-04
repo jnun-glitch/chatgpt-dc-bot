@@ -34,6 +34,8 @@ YOUTUBE_NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.c
 
 def normalize_account(provider: str, account: str) -> str:
     value = account.strip()
+    if not value:
+        raise ValueError("Account darf nicht leer sein")
     if provider == "youtube":
         match = re.search(r"/channel/(UC[a-zA-Z0-9_-]+)", value)
         if match:
@@ -154,11 +156,15 @@ def x_posts(user_id: str, since_id: str | None = None) -> list[dict]:
 def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
     """Return each unseen item once, in chronological order.
 
-    When last_seen exists in the provider result, everything before it is already
-    acknowledged and must never be reposted. Duplicate IDs in a feed are also
-    collapsed defensively.
+    Dated entries are processed before undated entries. This makes provider
+    responses deterministic even when an item is missing a timestamp.
+    Duplicate IDs are collapsed defensively.
     """
-    ordered = sorted(items, key=lambda item: (item.get("published") or item.get("created_at") or "", item.get("id", "")))
+    def sort_key(item: dict) -> tuple[int, str, str]:
+        timestamp = str(item.get("published") or item.get("created_at") or "")
+        return (0, timestamp, str(item.get("id") or "")) if timestamp else (1, "", str(item.get("id") or ""))
+
+    ordered = sorted(items, key=sort_key)
     unique: list[dict] = []
     seen: set[str] = set()
     for item in ordered:
@@ -171,13 +177,14 @@ def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
     if not last_seen:
         return unique
 
+    marker = str(last_seen)
     for index, item in enumerate(unique):
-        if item["id"] == str(last_seen):
+        if item["id"] == marker:
             return unique[index + 1 :]
 
     # Provider feeds can drop old entries. If the persisted marker is no longer
-    # present, the safest recoverable behavior is to process the currently
-    # available window once rather than silently miss everything.
+    # present, process the currently available window once rather than silently
+    # missing all current items.
     return unique
 
 
@@ -338,7 +345,7 @@ class SocialCog(commands.Cog):
         unseen = latest_unseen(items, sub.last_seen)
         if not unseen:
             if items and not sub.last_seen:
-                self._save(sub.id, last_seen=items[-1]["id"])
+                self._save(sub.id, last_seen=latest_unseen(items, None)[-1]["id"])
             return
         for item in unseen:
             embed = discord.Embed(title="📺 Neues YouTube-Video", description=f"**{item['title']}**\n{item['url']}", url=item["url"], timestamp=datetime.now(timezone.utc), color=discord.Color.red())
@@ -369,7 +376,7 @@ class SocialCog(commands.Cog):
         unseen = latest_unseen(normalized, sub.last_seen)
         if not unseen:
             if posts and not sub.last_seen:
-                self._save(sub.id, last_seen=posts[-1]["id"])
+                self._save(sub.id, last_seen=latest_unseen(normalized, None)[-1]["id"])
             return
         for post in unseen:
             url = f"https://x.com/{user.get('username', sub.account)}/status/{post['id']}"
