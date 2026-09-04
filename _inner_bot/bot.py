@@ -103,12 +103,16 @@ h1 {{ color:#007ACC; }}
 
 @app.route("/health")
 def route_health():
+    ready = bot.is_ready()
     return json.dumps({
-        "status": "ok" if bot.is_ready() else "starting",
+        "status": "ok" if ready else "starting",
         "uptime": get_uptime(),
-        "guilds": len(bot.guilds) if bot.is_ready() else 0,
+        "guilds": len(bot.guilds) if ready else 0,
         "cogs": loaded_cogs,
+        "cogs_loaded": len(loaded_cogs),
+        "cogs_expected": len(COG_LIST),
         "restarts": restart_count,
+        "latency_ms": round(bot.latency * 1000) if bot.latency else None,
     })
 
 
@@ -170,6 +174,24 @@ async def on_resumed():
 @bot.event
 async def on_socket_raw_receive(msg):
     pass
+
+
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    command_name = interaction.command.name if interaction.command else "unknown"
+    log_command(command_name, interaction.user, "error")
+    print(f"[COMMAND ERROR] /{command_name}: {error}")
+
+    message = "Beim Ausführen des Befehls ist ein Fehler aufgetreten."
+    if isinstance(error, app_commands.CheckFailure):
+        message = "Du hast keine Berechtigung für diesen Befehl."
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        message = "Dieser Befehl ist gerade auf Cooldown. Bitte versuche es gleich erneut."
+
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 @tree.command(name="ping", description="Zeigt die Bot-Latenz")
