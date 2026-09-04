@@ -152,8 +152,33 @@ def x_posts(user_id: str, since_id: str | None = None) -> list[dict]:
 
 
 def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
+    """Return each unseen item once, in chronological order.
+
+    When last_seen exists in the provider result, everything before it is already
+    acknowledged and must never be reposted. Duplicate IDs in a feed are also
+    collapsed defensively.
+    """
     ordered = sorted(items, key=lambda item: (item.get("published") or item.get("created_at") or "", item.get("id", "")))
-    return [item for item in ordered if item.get("id") and item.get("id") != (last_seen or "")]
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for item in ordered:
+        item_id = str(item.get("id") or "")
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        unique.append(item)
+
+    if not last_seen:
+        return unique
+
+    for index, item in enumerate(unique):
+        if item["id"] == str(last_seen):
+            return unique[index + 1 :]
+
+    # Provider feeds can drop old entries. If the persisted marker is no longer
+    # present, the safest recoverable behavior is to process the currently
+    # available window once rather than silently miss everything.
+    return unique
 
 
 @dataclass(slots=True)
