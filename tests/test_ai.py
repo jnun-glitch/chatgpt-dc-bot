@@ -23,6 +23,16 @@ def test_ai_reply_keeps_normal_text_and_discord_limit():
     assert len(_safe_reply('x' * 5000, 'Fallback')) <= 2000
 
 
+def test_ai_reply_uses_fallback_for_empty_text():
+    assert _safe_reply('', 'Fallback') == 'Fallback'
+    assert _safe_reply('   ', 'Fallback') == 'Fallback'
+
+
+def test_ai_reply_keeps_markdown_text():
+    text = '**Fertig**\n```python\nprint(1)\n```'
+    assert _safe_reply(text, 'Fallback') == text
+
+
 def test_ai_rate_limit_configuration_is_bounded():
     assert _ASK_LIMIT == 5
     assert _ASK_WINDOW == 60.0
