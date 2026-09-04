@@ -4,6 +4,8 @@ import io
 import json
 import time
 import zipfile
+from collections import deque
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -12,7 +14,9 @@ from core.utils import _require_verified
 from core.views import FeedbackView
 from core.logging import logger
 
-_ask_rate_limit = {}
+_ask_rate_limit: dict[tuple[int | None, int], deque] = {}
+_ASK_LIMIT = 5
+_ASK_WINDOW = 60.0
 
 
 class AICog(commands.Cog):
@@ -27,19 +31,20 @@ class AICog(commands.Cog):
     async def cmd_ask(self, interaction: discord.Interaction, frage: str):
         if not await _require_verified(interaction):
             return
-        # Rate-Limit: 5 Fragen pro Minute
-        uid = str(interaction.user.id)
-        now = time.time()
-        recent = [t for t in _ask_rate_limit.get(uid, []) if now - t < 60]
-        if len(recent) >= 5:
-            embed = discord.Embed(title='Rate-Limit', description='Zu viele Fragen! Warte 60 Sekunden.', color=discord.Color.orange())
+
+        # Rate-Limit pro User und Server. Alte Einträge werden aktiv entfernt,
+        # damit der In-Memory-Cache bei vielen Nutzern nicht unendlich wächst.
+        key = (interaction.guild_id, interaction.user.id)
+        now = time.monotonic()
+        recent = _ask_rate_limit.setdefault(key, deque())
+        cutoff = now - _ASK_WINDOW
+        while recent and recent[0] <= cutoff:
+            recent.popleft()
+        if len(recent) >= _ASK_LIMIT:
+            embed = discord.Embed(title='Rate-Limit', description='Zu viele Fragen! Warte kurz und versuch es erneut.', color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         recent.append(now)
-        if recent:
-            _ask_rate_limit[uid] = recent
-        else:
-            _ask_rate_limit.pop(uid, None)
 
         ai = _get_ai()
         if ai is None:
@@ -80,6 +85,7 @@ class AICog(commands.Cog):
                 'wikipedia': '🌐 Wikipedia',
                 'normal': '💬 Standard',
                 'extensions': '🔧 Erweiterung',
+                'render': '🌐 Render AI',
             }.get(source, source)
 
             embed = discord.Embed(title='AI Antwort', description=reply[:2000], color=discord.Color.blue())
@@ -93,7 +99,7 @@ class AICog(commands.Cog):
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f'AI error: {e}')
-            embed = discord.Embed(title='Fehler', description=f'AI-Fehler: {str(e)[:200]}', color=discord.Color.red())
+            embed = discord.Embed(title='Fehler', description='Die AI-Anfrage ist fehlgeschlagen. Bitte versuch es später erneut.', color=discord.Color.red())
             await interaction.followup.send(embed=embed)
 
     @app_commands.command(name='tip', description='Erhalte einen Tipp zur Game-Entwicklung')
@@ -211,7 +217,7 @@ class AICog(commands.Cog):
             await interaction.followup.send(embed=embed, file=file, view=view)
         except Exception as e:
             logger.error(f'Generate error: {e}')
-            embed = discord.Embed(title='Generierungsfehler', description=str(e)[:200], color=discord.Color.red())
+            embed = discord.Embed(title='Generierungsfehler', description='Die Spiel-Generierung ist fehlgeschlagen. Bitte versuch es später erneut.', color=discord.Color.red())
             await interaction.followup.send(embed=embed)
 
     @app_commands.command(name='analyze', description='Lade eine SB3-Datei hoch und erhalte eine Analyse')
@@ -260,219 +266,27 @@ class AICog(commands.Cog):
                     color=discord.Color.blue()
                 )
                 embed.add_field(name='Sprites', value=str(len(sprites)), inline=True)
-                embed.add_field(name='Costumes', value=str(total_costumes), inline=True)
-                embed.add_field(name='Sounds', value=str(total_sounds), inline=True)
+                embed.add_field(name='Bühne', value='Ja' if stage else 'Nein', inline=True)
                 embed.add_field(name='Blöcke', value=str(total_blocks), inline=True)
-                embed.add_field(name='SVG Assets', value=str(len(svg_files)), inline=True)
-                embed.add_field(name='WAV Assets', value=str(len(wav_files)), inline=True)
-
-                if sprites:
-                    sprite_list = '\n'.join(f'• {s["name"]} ({len(s.get("costumes", []))} Costumes)' for s in sprites[:10])
-                    embed.add_field(name='Sprite-Liste', value=sprite_list, inline=False)
-
-                backdrops = []
-                if stage:
-                    for c in stage.get('costumes', []):
-                        backdrops.append(c.get('name', 'unknown'))
-                if backdrops:
-                    embed.add_field(name='Backdrops', value=', '.join(backdrops), inline=False)
-
+                embed.add_field(name='Kostüme', value=str(total_costumes), inline=True)
+                embed.add_field(name='Sounds', value=str(total_sounds), inline=True)
+                embed.add_field(name='SVG-Dateien', value=str(len(svg_files)), inline=True)
+                embed.add_field(name='WAV-Dateien', value=str(len(wav_files)), inline=True)
                 await interaction.followup.send(embed=embed)
         except zipfile.BadZipFile:
-            embed = discord.Embed(title='Fehler', description='Datei ist kein gültiges ZIP/SB3.', color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send('Die Datei ist keine gültige SB3/ZIP-Datei.')
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            await interaction.followup.send('Die project.json konnte nicht gelesen werden.')
         except Exception as e:
             logger.error(f'Analyze error: {e}')
-            embed = discord.Embed(title='Analyse-Fehler', description=str(e)[:200], color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send('Die SB3-Analyse ist fehlgeschlagen. Bitte versuch es später erneut.')
 
-    @app_commands.command(name='ai', description='Analysiere was die AI aus deinem Text versteht')
-    @app_commands.describe(text='Beschreibung des Spiels die die AI analysieren soll')
-    async def cmd_ai(self, interaction: discord.Interaction, text: str):
+    @app_commands.command(name='ai', description='Analysiere den aktuellen Ticket-Kontext mit der AI')
+    async def cmd_ai(self, interaction: discord.Interaction):
         if not await _require_verified(interaction):
             return
-
-        await interaction.response.defer(thinking=True)
-
-        try:
-            gen = _get_ai_gen()
-            analysis = await asyncio.to_thread(gen.analyze, text)
-
-            features = analysis.get('features', [])
-            probs = analysis.get('probabilities', {})
-            num_features = analysis.get('num_features', 0)
-
-            sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-            top_features = sorted_probs[:8]
-
-            feature_labels = {
-                'movement_auto': 'Automatische Bewegung',
-                'movement_arrow': 'Pfeiltasten-Steuerung',
-                'movement_wasd': 'WASD-Steuerung',
-                'movement_mouse': 'Maus-Folgen',
-                'has_gravity': 'Schwerkraft',
-                'has_jumping': 'Springen',
-                'has_scoring': 'Punkte-System',
-                'has_lives': 'Leben',
-                'has_timer': 'Timer/Countdown',
-                'has_levels': 'Level-System',
-                'has_enemies': 'Gegner',
-                'has_enemy_patrol': 'Gegner-Patrouille',
-                'has_enemy_chase': 'Gegner-Verfolgung',
-                'has_boss': 'Boss-Kampf',
-                'has_coin': 'Münzen sammeln',
-                'has_powerups': 'Power-Ups',
-                'has_traps': 'Fallen',
-                'has_cloning': 'Klon-System',
-                'has_collectibles': 'Sammelgegenstände',
-                'has_platforms': 'Plattformen',
-                'has_sound_effects': 'Sound-Effekte',
-                'has_animation': 'Animation',
-                'has_speech': 'Sprechblase',
-                'has_camera': 'Kamera',
-                'has_win_condition': 'Gewinn-Bedingung',
-                'has_backdrop_change': 'Hintergrund-Wechsel',
-                'has_day_night': 'Tag/Nacht-Wechsel',
-                'has_weather': 'Wettereffekte',
-                'is_multi_sprite': 'Mehrere Figuren',
-                'backdrop_grass': 'Hintergrund: Wiese',
-                'backdrop_sky': 'Hintergrund: Himmel',
-                'backdrop_night': 'Hintergrund: Nacht',
-                'backdrop_space': 'Hintergrund: Weltraum',
-                'backdrop_castle': 'Hintergrund: Burg',
-                'backdrop_underwater': 'Hintergrund: Unterwasser',
-                'backdrop_desert': 'Hintergrund: Wüste',
-            }
-
-            def confidence_bar(conf):
-                filled = int(conf * 10)
-                return '█' * filled + '░' * (10 - filled)
-
-            feature_lines = []
-            for feat, conf in top_features:
-                label = feature_labels.get(feat, feat)
-                bar = confidence_bar(conf)
-                pct = int(conf * 100)
-                feature_lines.append(f'`{bar}` **{pct}%** {label}')
-
-            from project.ai_generator.intent_classifier import extract_game_details
-            details = extract_game_details(text)
-            detail_lines = []
-            if details.get('num_lives'):
-                detail_lines.append(f'❤️ {details["num_lives"]} Leben')
-            if details.get('num_levels'):
-                detail_lines.append(f'📊 {details["num_levels"]} Level')
-            if details.get('timer_seconds'):
-                detail_lines.append(f'⏱️ {details["timer_seconds"]} Sekunden')
-            if details.get('has_boss'):
-                detail_lines.append('💀 Boss erkannt')
-            if details.get('enemies_patrol'):
-                detail_lines.append('🔍 Gegner-Patrouille')
-
-            avg_conf = sum(p for _, p in top_features) / len(top_features) if top_features else 0
-            conf_emoji = '🟢' if avg_conf > 0.7 else '🟡' if avg_conf > 0.4 else '🔴'
-
-            embed = discord.Embed(
-                title='AI Spiel-Analyse',
-                description=f'**Eingabe:** {text[:200]}',
-                color=discord.Color.blue()
-            )
-            embed.add_field(
-                name=f'Erkannte Features ({num_features})',
-                value='\n'.join(feature_lines) if feature_lines else 'Keine Features erkannt',
-                inline=False
-            )
-            if detail_lines:
-                embed.add_field(
-                    name='Erkannte Details',
-                    value='\n'.join(detail_lines),
-                    inline=True
-                )
-            embed.add_field(
-                name=f'{conf_emoji} Confidence',
-                value=f'Durchschnitt: **{int(avg_conf * 100)}%**',
-                inline=True
-            )
-            embed.set_footer(text=f'Skill-Level: {analysis.get("skill_level", "unbekannt")} | Features insgesamt: {num_features}')
-            await interaction.followup.send(embed=embed)
-
-        except Exception as e:
-            logger.error(f'AI analysis error: {e}')
-            embed = discord.Embed(title='Fehler', description=str(e)[:200], color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
-
-    @app_commands.command(name='refine', description='Verfeinere ein generiertes Spiel')
-    @app_commands.describe(
-        aenderung='Was soll geändert werden? (z.B. "mehr Gegner", "Sound hinzufügen", "Schwieriger")',
-        sprache='Sprache (de, en, fr, es, it)'
-    )
-    @app_commands.choices(sprache=[
-        app_commands.Choice(name='Deutsch', value='de'),
-        app_commands.Choice(name='English', value='en'),
-        app_commands.Choice(name='Français', value='fr'),
-        app_commands.Choice(name='Español', value='es'),
-        app_commands.Choice(name='Italiano', value='it'),
-        app_commands.Choice(name='Svenska', value='sv'),
-    ])
-    async def cmd_refine(self, interaction: discord.Interaction, aenderung: str, sprache: app_commands.Choice[str] = None):
-        if not await _require_verified(interaction):
-            return
-        gen = _get_ai_gen()
-
-        await interaction.response.defer(thinking=True)
-        lang = sprache.value if sprache else 'de'
-        session_id = str(interaction.user.id)
-
-        try:
-            refined_prompt = f"Verbessere ein bestehendes Spiel mit diesen Aenderungen: {aenderung}. Behalte die grundlegende Struktur bei und mache gezielte Verbesserungen."
-            sb3_bytes, metadata = await asyncio.to_thread(gen.generate, refined_prompt, session_id)
-
-            if not sb3_bytes or len(sb3_bytes) < 100:
-                await interaction.followup.send(embed=discord.Embed(title='Refinement fehlgeschlagen', color=discord.Color.red()))
-                return
-
-            features = metadata.get('features', [])
-            feature_str = ', '.join(features[:8]) if features else 'Keine'
-
-            embed = discord.Embed(
-                title='Spiel verfeinert',
-                description=f'**Änderung:** {aenderung}\n**Features:** {feature_str}\n**Sprache:** {lang}',
-                color=discord.Color.blue()
-            )
-            file = discord.File(io.BytesIO(sb3_bytes), filename='verfeinertes_spiel.sb3')
-            view = FeedbackView(session_id, features)
-            await interaction.followup.send(embed=embed, file=file, view=view)
-        except Exception as e:
-            logger.error(f'Refine error: {e}')
-            await interaction.followup.send(embed=discord.Embed(title='Fehler', description=str(e)[:200], color=discord.Color.red()))
-
-    @app_commands.command(name='suggest', description='AI schlägt ein Spiel basierend auf deinem Level vor')
-    async def cmd_suggest(self, interaction: discord.Interaction):
-        if not await _require_verified(interaction):
-            return
-        gen = _get_ai_gen()
-        session_id = str(interaction.user.id)
-
-        suggestion = await asyncio.to_thread(gen.suggest, session_id)
-
-        if suggestion:
-            skill_emoji = {'anfaenger': '🟢', 'mittel': '🟡', 'fortgeschritten': '🔴'}
-            skill = suggestion.get('skill', 'mittel')
-            embed = discord.Embed(
-                title='Spiel-Vorschlag',
-                description=(
-                    f'**Vorschlag:** {suggestion.get("type", "Unbekannt")}\n'
-                    f'**Features:** {", ".join(suggestion.get("features", [])[:5])}\n'
-                    f'**Schwierigkeit:** {suggestion.get("difficulty", "leicht")}\n'
-                    f'**Dein Level:** {skill_emoji.get(skill, "")} {skill}'
-                ),
-                color=discord.Color.purple()
-            )
-            embed.set_footer(text='Nutze /generate mit einer Beschreibung um dieses Spiel zu erstellen!')
-            await interaction.response.send_message(embed=embed)
-        else:
-            await interaction.response.send_message(embed=discord.Embed(title='Kein Vorschlag verfügbar', description='Der Generator läuft über die Web-App und ist gerade nicht erreichbar.', color=discord.Color.yellow()))
+        await interaction.response.send_message('🧠 Die Ticket-AI ist über das Ticket-System verfügbar.', ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(AICog(bot))
