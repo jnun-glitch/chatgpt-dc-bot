@@ -1,5 +1,6 @@
 """Bad-Wort-Filter: Liste laden + Logging in DB und Bad-Word-Log-Kanal."""
 import re
+import unicodedata
 from pathlib import Path
 from core.config import BOT_DIR
 from core.db import get_db
@@ -9,28 +10,29 @@ from core.logging import logger
 import discord
 
 _BAD_WORDS_DEFAULT = [
-    'arsch', 'arschloch', 'armleuchter', 'bastard', 'depp',
-    'fotze', 'hurensohn', 'hure', 'idiot', 'missgeburt',
-    'spast', 'spasti', 'trottel', 'vollidiot',
+    'arsch', 'arschloch', 'armleuchter', 'bastard', 'depp', 'dummkopf', 'dumm',
+    'trottel', 'vollidiot', 'idiot', 'idiotin', 'schwachkopf', 'drecksack',
+    'penner', 'versager', 'nichtsnutz', 'affe', 'hirni', 'widerling', 'ekel',
+    'fotze', 'hurensohn', 'hure', 'missgeburt', 'spast', 'spasti', 'spacken',
     'scheiße', 'scheisse', 'scheiss', 'scheiß', 'scheißt', 'scheisst',
-    'kacke', 'kacken', 'kackst', 'kackt', 'kack',
-    'pisse', 'pissen', 'pisst', 'furz', 'furzt',
-    'fick', 'ficken', 'fickt', 'fickst', 'ficke', 'fickte', 'fickend', 'fickende',
-    'ficker', 'gefickt', 'wichser', 'wichsen', 'wichst', 'wichs',
-    'lutsch', 'lutschen', 'lutscht', 'lutscher', 'blowjob', 'penis', 'schwanz',
-    'titten', 'nutte', 'vagina',
-    'asshole', 'bitch', 'bitches', 'cunt', 'dick', 'dickhead',
-    'moron', 'retard', 'retarded', 'whore', 'slut',
-    'shit', 'shitty', 'bullshit', 'piss', 'pissed',
-    'fuck', 'fucked', 'fucker', 'fucking', 'motherfucker', 'cock',
-    'cocksucker', 'pussy',
-    'nigger', 'nigga', 'faggot', 'fag', 'kike', 'spic',
+    'kacke', 'kacken', 'kackst', 'kackt', 'kack', 'pisse', 'pissen', 'pisst',
+    'furz', 'furzt', 'stinke', 'stinken', 'verpiss', 'verpissen', 'verpisst',
+    'fick', 'ficken', 'fickt', 'fickst', 'ficke', 'fickte', 'fickend', 'ficker',
+    'gefickt', 'wichser', 'wichsen', 'wichst', 'lutsch', 'lutschen', 'lutscher',
+    'blasen', 'penis', 'schwanz', 'titten', 'titte', 'nutte', 'vagina', 'muschi',
+    'pussy', 'dildo', 'analsex', 'sperma', 'masturbieren', 'vögeln', 'vögelt',
+    'bumsen', 'poppen', 'sex', 'vergewaltigung', 'vergewaltigen',
+    'asshole', 'bitch', 'bitches', 'cunt', 'dick', 'dickhead', 'douchebag',
+    'jackass', 'jerk', 'moron', 'retard', 'retarded', 'whore', 'slut', 'scumbag',
+    'loser', 'pathetic', 'dumbass', 'stupid', 'shit', 'shitty', 'bullshit',
+    'piss', 'pissed', 'crap', 'fuck', 'fucked', 'fucker', 'fucking',
+    'motherfucker', 'cock', 'cocksucker', 'pussy', 'rape', 'rapist',
+    'nigger', 'nigga', 'faggot', 'fag', 'kike', 'spic', 'chink', 'gook',
 ]
 
 
 def _load_bad_words() -> list:
-    """Lädt die Wortliste aus bad_words.txt (eine pro Zeile, # = Kommentar).
-    Bei Fehler/Fallback wird die eingebettete Standardliste verwendet."""
+    """Lädt die Wortliste aus bad_words.txt (eine pro Zeile, # = Kommentar)."""
     path = BOT_DIR / 'bad_words.txt'
     try:
         words = []
@@ -49,17 +51,52 @@ def _load_bad_words() -> list:
 
 
 BAD_WORDS = _load_bad_words()
-_BAD_WORD_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(w) for w in BAD_WORDS) + r')\b',
-    re.IGNORECASE,
-)
+
+# Mehr Varianten als nur \b...\b: Satzzeichen und typische Schreibvarianten
+# zwischen Buchstaben werden erkannt, ohne normale Wörter unnötig zu blockieren.
+_NORMALIZE_TRANSLATION = str.maketrans({
+    '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a',
+    '$': 's',
+})
+
+def _normalize_text(text: str) -> str:
+    text = unicodedata.normalize('NFKC', text).lower().translate(_NORMALIZE_TRANSLATION)
+    text = text.replace('ß', 'ss')
+    # Trenner zwischen Buchstaben entfernen, damit z.B. Schreibweisen mit
+    # Leerzeichen/Punkten nicht einfach am Filter vorbeikommen.
+    return re.sub(r'[\W_]+', '', text, flags=re.UNICODE)
+
+
+def _build_patterns(words: list[str]):
+    patterns = []
+    for word in words:
+        clean = _normalize_text(word)
+        if not clean:
+            continue
+        # Einzelne Begriffe als Wortbestandteil erkennen; sehr kurze Begriffe
+        # (<=3) bleiben bei der normalen Wortgrenze, um False Positives zu reduzieren.
+        if len(clean) <= 3:
+            patterns.append(re.compile(r'(?<!\w)' + re.escape(clean) + r'(?!\w)', re.IGNORECASE))
+        else:
+            patterns.append(re.compile(re.escape(clean), re.IGNORECASE))
+    return patterns
+
+
+_BAD_WORD_PATTERNS = _build_patterns(BAD_WORDS)
+
+
+def find_bad_word(content: str) -> str | None:
+    normalized = _normalize_text(content)
+    for pattern, original in zip(_BAD_WORD_PATTERNS, BAD_WORDS):
+        if pattern.search(normalized):
+            return original
+    return None
 
 
 async def _log_bad_word(guild, author, channel, content: str):
     """Loggt eine gefilterte Nachricht in #bad-word-log + DB.
     Bei jedem 5. Bad-Word-Vorfall des Users wird automatisch ein Warn gesetzt."""
-    match = _BAD_WORD_RE.search(content)
-    word = match.group(0) if match else '?'
+    word = find_bad_word(content) or '?'
     uid = str(author.id)
     gid = str(guild.id)
 
