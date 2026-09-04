@@ -20,3 +20,11 @@ def test_voice_safe_name_removes_path_like_characters():
 def test_voice_safe_name_has_reasonable_length_limit():
     value = VoiceCog._safe_name('A' * 500)
     assert len(value) <= 60
+
+
+def test_voice_safe_name_keeps_normal_name_readable():
+    assert VoiceCog._safe_name('Luis_123') == 'Luis_123'
+
+
+def test_voice_safe_name_never_returns_empty_for_punctuation_only():
+    assert VoiceCog._safe_name('///???')
