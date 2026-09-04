@@ -10,6 +10,10 @@ import discord
 from discord import app_commands
 from flask import Flask
 
+from core.ai_ticket import analyze_ticket
+from core.db import get_ticket_by_channel, update_ticket_ai
+from core.logging import logger
+
 
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 START_TIME = time.time()
@@ -253,10 +257,82 @@ async def cmd_userinfo(
     await interaction.response.send_message(embed=embed)
 
 
+async def _run_ai_ticket(message: discord.Message):
+    """Analyze the complete current ticket without blocking Discord's event loop."""
+    ticket = get_ticket_by_channel(str(message.channel.id))
+    if not ticket:
+        await message.channel.send("❌ `!ai` funktioniert nur in einem offenen Ticket-Channel.")
+        return
+
+    # Support/Admin/Moderator dürfen analysieren; der Ticket-Ersteller darf sein eigenes Ticket ebenfalls prüfen.
+    allowed = str(message.author.id) == str(ticket["user_id"])
+    if message.guild:
+        allowed = allowed or message.author.guild_permissions.manage_channels
+        role_names = {role.name.lower() for role in message.author.roles}
+        allowed = allowed or bool(role_names & {"admin", "moderator", "support"})
+    if not allowed:
+        await message.channel.send("❌ Du hast keine Berechtigung für die AI-Ticketanalyse.")
+        return
+
+    await message.channel.send("🔍 **AI analysiert das komplette Ticket...** Bitte kurz warten.")
+
+    lines = [
+        f"Ticket #{ticket['ticket_number']:04d}",
+        f"Kategorie: {ticket.get('kategorie', 'Sonstiges')}",
+        f"Betreff: {ticket.get('betreff', 'Kein Betreff')}",
+        "",
+        "TICKETVERLAUF:",
+    ]
+    try:
+        async for msg in message.channel.history(limit=500, oldest_first=True):
+            if msg.content.strip() == "!ai":
+                continue
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
+            content = msg.content.strip() or "[Kein Text]"
+            attachments = " ".join(a.filename for a in msg.attachments)
+            if attachments:
+                content += f" [Anhänge: {attachments}]"
+            lines.append(f"[{timestamp}] {msg.author.display_name}: {content}")
+    except discord.Forbidden:
+        await message.channel.send("❌ Ich kann den Ticketverlauf nicht lesen. Prüfe die Channel-Berechtigungen des Bots.")
+        return
+    except Exception as exc:
+        logger.error(f"Ticket-History konnte nicht gelesen werden: {exc}")
+        await message.channel.send("❌ Der Ticketverlauf konnte nicht geladen werden.")
+        return
+
+    # Schutz gegen extrem große Requests; die jüngsten Nachrichten bleiben erhalten.
+    transcript = "\n".join(lines)
+    if len(transcript) > 60000:
+        transcript = lines[:5] and "\n".join(lines[:5]) + "\n\n[Älterer Verlauf wegen Größenlimit gekürzt]\n" + "\n".join(lines[-500:])
+        transcript = transcript[-60000:]
+
+    try:
+        verdict = await asyncio.to_thread(analyze_ticket, transcript)
+        update_ticket_ai(str(message.channel.id), verdict)
+    except Exception as exc:
+        logger.error(f"AI-Ticketanalyse fehlgeschlagen: {exc}")
+        await message.channel.send(f"❌ AI-Analyse fehlgeschlagen: `{str(exc)[:300]}`")
+        log_command("!ai", message.author, "error")
+        return
+
+    embed = discord.Embed(
+        title=f"🤖 AI-Ticketanalyse #{ticket['ticket_number']:04d}",
+        description=verdict[:4096],
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text=f"Analysiert von DeepSeek • ausgelöst von {message.author.display_name}")
+    await message.channel.send(embed=embed)
+    log_command("!ai", message.author)
+
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
+
+    if message.content.strip().lower() == "!ai":
+        await _run_ai_ticket(message)
 
 
 if __name__ == "__main__":
