@@ -13,8 +13,20 @@ from core.backup import create_backup, prune_backups
 from core.config import DB_PATH, DATA_DIR, TRANSCRIPTS_DIR
 from core.logging import logger
 
-BACKUP_INTERVAL_SECONDS = max(60, int(os.environ.get("BACKUP_INTERVAL_SECONDS", "300")))
-BACKUP_RETENTION = max(1, int(os.environ.get("BACKUP_RETENTION", "288")))
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
+        return default
+
+
+BACKUP_INTERVAL_SECONDS = _env_int("BACKUP_INTERVAL_SECONDS", 300, 60)
+BACKUP_RETENTION = _env_int("BACKUP_RETENTION", 288, 1)
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(DATA_DIR / "backups"))).resolve()
 
 
@@ -54,7 +66,6 @@ class BackupCog(commands.Cog):
     @backup_loop.before_loop
     async def before_backup_loop(self):
         await self.bot.wait_until_ready()
-        # Sofort ein erstes Backup erstellen, statt erst fünf Minuten zu warten.
         try:
             path = await self._make_backup()
             logger.info("Startup-Backup erstellt: %s", path)
