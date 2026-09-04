@@ -1,7 +1,12 @@
 """Zentrales Logging für den Bot."""
+from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
-from core.config import BOT_DIR
+
+# Logging darf config.py nicht importieren, weil config.py selbst den Logger
+# für Warnungen beim Einlesen der Umgebungsvariablen benötigt. Dadurch vermeiden
+# wir einen Circular Import beim Bot-Start.
+BOT_DIR = Path(__file__).resolve().parent.parent
 
 _formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
