@@ -1,6 +1,6 @@
 # BAD WORDS Liste
-# Ein Wort pro Zeile. Zeilen mit # am Anfang sind Kommentare.
-# Nach Änderungen einfach den Bot neu starten (DiscordBot.py / bot.py).
+# Ein Begriff pro Zeile. Zeilen mit # am Anfang sind Kommentare.
+# Nach Änderungen Bot neu starten.
 
 # ── Deutsch – Beleidigungen ──
 arsch
@@ -17,6 +17,9 @@ vollidiot
 idiot
 idiotin
 idioten
+schwachkopf
+flachkopf
+flachzange
 spast
 spasti
 spacken
@@ -28,9 +31,6 @@ hure
 huensohn
 hurenkind
 hundesohn
-schwachkopf
-flachwichser
-dumpfbacke
 drecksack
 drecksau
 dreckiges
@@ -42,7 +42,6 @@ dumme
 doof
 blöd
 blöde
-du spast
 ehrenlos
 verlierer
 versager
@@ -55,11 +54,29 @@ mongoloid
 debil
 hirni
 holzkopf
-trottelige
-komischer
 widerling
 ekel
 idiotisch
+vollpfosten
+pfosten
+pfeife
+spacko
+lappen
+opfer
+knecht
+vollhonk
+honk
+clown
+kasper
+pappnase
+heini
+spinner
+spinnerin
+bekloppt
+bescheuert
+hirnlos
+dämlich
+dummkopf
 
 # ── Deutsch – Fäkalsprache ──
 scheise
@@ -96,8 +113,10 @@ verpiss dich
 scheißkerl
 scheißhaus
 shitshow
+mist
+mistkerl
 
-# ── Deutsch – Sexualbegriffe ──
+# ── Deutsch – sexuelle / nicht jugendfreie Begriffe ──
 fick
 ficken
 fickt
@@ -126,16 +145,12 @@ lutsch
 lutschen
 lutscht
 lutscher
-blowjob
-blowjob
-handjob
 blasen
 geblasen
 penis
 penisse
 schwanz
 schwänze
-schwanzlutsch
 titten
 titte
 brüste
@@ -144,7 +159,6 @@ nutte
 nutten
 vagina
 vaginas
-mösenfotze
 muschi
 möse
 pussy
@@ -172,7 +186,6 @@ bumst
 rammeln
 poppen
 poppt
-ficken geil
 pervers
 sex
 sexualverbrecher
@@ -231,6 +244,13 @@ stupid
 fool
 fools
 brat
+clown
+creep
+creepy
+weirdo
+loser
+sucker
+jerkface
 
 # ── Englisch – Fäkalsprache ──
 shit
@@ -255,7 +275,7 @@ poop
 screw
 screwed
 
-# ── Englisch – Sexualbegriffe ──
+# ── Englisch – sexuelle / nicht jugendfreie Begriffe ──
 fuck
 fucked
 fucker
@@ -265,7 +285,6 @@ fucktard
 motherfucker
 motherfucking
 cock
-cocksucker
 cocksucker
 cockhead
 pussy
@@ -299,6 +318,7 @@ suck my dick
 eat shit
 
 # ── Rassistische / diskriminierende Begriffe ──
+# Diese Kategorie wird absichtlich strikt behandelt.
 nigger
 nigga
 niggaz
@@ -314,7 +334,6 @@ spook
 wetback
 chink
 gook
-white trash
 negro
 paki
 beaner
@@ -323,7 +342,6 @@ darkie
 towelhead
 sandnigger
 kraut
-hun
 jap
 gypsy
 tranny
@@ -342,4 +360,34 @@ limey
 brit
 canuck
 camel jockey
-muff
+
+# ── Umgehungs-/Chat-Schreibweisen ──
+# Die eigentliche Erkennung normalisiert zusätzlich Zahlen, Sonderzeichen,
+# Groß-/Kleinschreibung und Unicode. Hier nur häufige Sonderfälle ergänzen.
+sh1t
+f4ck
+b1tch
+fuk
+fuq
+azz
+phuck
+n1gga
+n1gger
+f4ggot
+
+# ── Bedrohliche / aggressive Chatbegriffe ──
+# Nicht jede Zeile bedeutet automatisch eine echte Gefahr; sie dient als
+# Moderationssignal und kann später separat bewertet werden.
+kill yourself
+kys
+kill you
+im gonna kill you
+i will kill you
+you will die
+die bitch
+shut up
+get lost
+fuck off
+piss off
+
+# ── Ende ──
