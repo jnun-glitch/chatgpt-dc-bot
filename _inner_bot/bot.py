@@ -54,7 +54,7 @@ COG_LIST = [
     "active", "admin", "ai", "automod", "community", "dashboard",
     "fun", "help", "info", "levelroles", "mcstatus",
     "moderation", "music", "private_vc", "reactionroles",
-    "starboard", "stats", "tickets", "verify",
+    "starboard", "stats", "tickets", "verify", "voice",
 ]
 
 
@@ -264,7 +264,6 @@ async def _run_ai_ticket(message: discord.Message):
         await message.channel.send("❌ `!ai` funktioniert nur in einem offenen Ticket-Channel.")
         return
 
-    # Support/Admin/Moderator dürfen analysieren; der Ticket-Ersteller darf sein eigenes Ticket ebenfalls prüfen.
     allowed = str(message.author.id) == str(ticket["user_id"])
     if message.guild:
         allowed = allowed or message.author.guild_permissions.manage_channels
@@ -301,10 +300,9 @@ async def _run_ai_ticket(message: discord.Message):
         await message.channel.send("❌ Der Ticketverlauf konnte nicht geladen werden.")
         return
 
-    # Schutz gegen extrem große Requests; die jüngsten Nachrichten bleiben erhalten.
     transcript = "\n".join(lines)
     if len(transcript) > 60000:
-        transcript = lines[:5] and "\n".join(lines[:5]) + "\n\n[Älterer Verlauf wegen Größenlimit gekürzt]\n" + "\n".join(lines[-500:])
+        transcript = "\n".join(lines[:5]) + "\n\n[Älterer Verlauf wegen Größenlimit gekürzt]\n" + "\n".join(lines[-500:])
         transcript = transcript[-60000:]
 
     try:
