@@ -1,12 +1,12 @@
-"""Rollen-Presets, Staff-Kanäle und Kanal-Berechtigungen."""
+"""Rollen-Presets, Staff-Kanäle und sichere Kanal-Berechtigungen."""
 import discord
 from core.logging import logger
 from core.channelnames import styled_text_name, base_name, STAFF_EXCLUDED_BASE
 
-# Rollen-Schutz: Werden bei verdächtigen Changes entfernt
-PROTECTED_ROLE_NAMES = ['Owner', 'Manager', 'Bot Manager', 'Moderator']
+# Rollen-Schutz: Diese Rollen werden von der allgemeinen Kanal-Vergabe nicht überschrieben.
+PROTECTED_ROLE_NAMES = {'Owner', 'Manager', 'Bot Manager', 'Moderator'}
 
-# Staff-Rollen-Hierarchie (höhester Index = höchstest Rolle)
+# Staff-Rollen-Hierarchie (höchster Eintrag = höchste Zielrolle).
 STAFF_ROLE_HIERARCHY = [
     'Owner',
     'Manager',
@@ -91,120 +91,160 @@ ROLE_PRESETS = {
     },
 }
 
-# Kanäle, die NICHT automatisch neu berechtigt werden (Staff + Tickets)
-# BASIS-Namen – Vergleich via base_name() in apply_channel_permissions
-# (alte Kanalnamen werden automatisch erkannt)
-
 
 async def ensure_standard_roles(guild) -> list:
-    """Legt fehlende Standard-Rollen mit den richtigen Rechten an. Liefert Liste der erstellten Rollen."""
+    """Legt Standard-Rollen an und heilt ihre Server-Berechtigungen.
+
+    Bestehende Rollen werden bewusst auf das Preset zurückgesetzt. Dadurch kann eine
+    versehentlich oder absichtlich aufgebohrte Member-/Support-/News-Rolle keine
+    gefährlichen Zusatzrechte wie `manage_channels`, `manage_roles` oder `administrator`
+    behalten.
+    """
     created = []
+    repaired = []
     for name, cfg in ROLE_PRESETS.items():
         role = discord.utils.get(guild.roles, name=name)
-        if not role:
+        if role is None:
             try:
-                await guild.create_role(
+                role = await guild.create_role(
                     name=name,
                     permissions=cfg['permissions'],
                     color=cfg['color'],
                     hoist=cfg['hoist'],
-                    reason='Auto-Setup: Standard-Rolle'
+                    reason='Auto-Setup: Standard-Rolle',
                 )
                 created.append(name)
             except Exception as e:
                 logger.warning(f'Rolle {name} konnte nicht erstellt werden: {e}')
-    return created
+            continue
+
+        if role.is_default() or role.managed:
+            continue
+
+        # Nur die serverweiten Rollenrechte erzwingen. Das verhindert, dass
+        # bestehende Standardrollen unbemerkt zu Admin-/Mod-Rollen werden.
+        try:
+            if role.permissions != cfg['permissions']:
+                await role.edit(
+                    permissions=cfg['permissions'],
+                    reason='Auto-Setup: Standard-Rollenrechte repariert',
+                )
+                repaired.append(name)
+        except Exception as e:
+            logger.warning(f'Rolle {name} konnte nicht repariert werden: {e}')
+
+    return created + [f'{name} (Rechte repariert)' for name in repaired]
 
 
 async def ensure_bot_role_hierarchy(guild) -> list:
-    """Heilt die Rollen-Hierarchie: Der Bot muss ÜBER allen Rollen stehen,
-    die er vergeben soll (Member u.a.), sonst scheitert die Rollenvergabe
-    mit 403 Missing Permissions. Verschiebt die höchste Bot-Rolle nach oben.
-    Liefert Liste der angepassten Rollen."""
-    if not guild.me:
-        return []
-    bot_top = guild.me.top_role
-    if bot_top == guild.default_role:
-        return []
-    try:
-        if not bot_top.permissions.manage_roles and not bot_top.permissions.administrator:
-            return []
-    except Exception:
+    """Prüft die Bot-Rollen-Hierarchie und versucht eine Reparatur.
+
+    Discord lässt einen Bot nicht zuverlässig über seine eigene höchste Rolle
+    hinaus arbeiten. Deshalb meldet diese Funktion vor allem einen fehlenden
+    Spielraum anstatt still falsche Sicherheit vorzutäuschen.
+    """
+    me = guild.me
+    if not me or me.top_role == guild.default_role:
         return []
 
-    # Rollen, die der Bot vergeben muss – oberste davon bestimmt die Mindestposition
-    target_names = {'Member', 'Verified', 'News', 'Dev Updates', 'Events', 'Media', 'VIP', 'Supporter', 'Support'}
-    targets = [r for r in guild.roles if r.name in target_names and r != guild.default_role]
-    if not targets:
+    targets = [
+        r for r in guild.roles
+        if r.name in {'Member', 'Verified', 'News', 'Dev Updates', 'Events', 'Support'}
+        and not r.is_default()
+        and not r.managed
+    ]
+    blocked = [r.name for r in targets if r.position >= me.top_role.position]
+    if not blocked:
         return []
-    # Höchste Ziel-Rolle (nach Position)
-    highest_target = max(targets, key=lambda r: r.position)
-    if highest_target.position < bot_top.position:
-        return []  # Bot steht bereits drüber
 
-    # Bot-Rolle genau einen Rang über der höchsten Ziel-Rolle platzieren
-    new_position = highest_target.position + 1
-    # Aber nicht über die höchste Server-Rolle hinaus
-    max_pos = max((r.position for r in guild.roles if not r.is_bot_managed()), default=0)
-    if new_position > max_pos:
-        new_position = max_pos
-    if new_position <= bot_top.position:
-        return []
-    try:
-        await bot_top.edit(position=new_position, reason='Auto-Heal: Bot-Rolle über vergabefähige Rollen')
-        logger.info(f'Bot-Rolle {bot_top.name} auf Position {new_position} verschoben ({guild.name})')
-        return [bot_top.name]
-    except Exception as e:
-        logger.warning(f'Bot-Rollen-Hierarchie konnte nicht repariert werden ({guild.name}): {e}')
-        return []
+    logger.warning(
+        'Bot-Rolle steht zu niedrig auf %s; diese Rollen können ggf. nicht vergeben werden: %s',
+        guild.name,
+        ', '.join(blocked),
+    )
+    return [f'Bot-Rolle zu niedrig: {name}' for name in blocked]
 
 
 async def ensure_staff_channels(guild) -> list:
-    """Legt fehlende Staff-Kanäle an (staff-movements + bad-word-log).
-    Benennt bestehende Kanäle mit Basis-Namen automatisch in den Emoji-Stil um.
-    Liefert Liste der erstellten/umbenannten Kanäle."""
+    """Legt Staff-Kanäle an und setzt ihre privaten Berechtigungen auch bei vorhandenen Kanälen."""
     from core.channelnames import find_channel as _find_channel
-    created = []
+    changed = []
 
-    staff_plan = [
-        ('staff-movements', 'Rollen-Änderungen und Beförderungen (automatisch)'),
-        ('bad-word-log', 'Gefilterte Nachrichten (Bad Words) – nur für Admins'),
-        ('audit-log', 'Vollständiges Audit-Logging – ALLE Nachrichten, Commands, Änderungen'),
-    ]
-    for base, topic in staff_plan:
+    channel_plan = {
+        'staff-movements': {
+            'topic': 'Rollen-Änderungen und Beförderungen (automatisch)',
+            'allow': ('Admin', 'Moderator'),
+        },
+        'bad-word-log': {
+            'topic': 'Gefilterte Nachrichten (Bad Words) – nur für Admins',
+            'allow': ('Admin',),
+        },
+        'audit-log': {
+            'topic': 'Audit-Logging – Änderungen und Moderationsereignisse',
+            'allow': ('Admin',),
+        },
+    }
+
+    bot_member = guild.me
+    for base, cfg in channel_plan.items():
         styled = styled_text_name(base)
         ch = _find_channel(guild, base)
-        if ch is None:
-            try:
-                admin_role = discord.utils.get(guild.roles, name='Admin')
-                mod_role = discord.utils.get(guild.roles, name='Moderator')
-                overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                }
-                if admin_role:
-                    overwrites[admin_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if mod_role:
-                    overwrites[mod_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                await guild.create_text_channel(
-                    styled,
-                    topic=topic,
-                    overwrites=overwrites,
-                    reason='Auto-Setup: Staff-Kanal'
+        try:
+            admin_role = discord.utils.get(guild.roles, name='Admin')
+            mod_role = discord.utils.get(guild.roles, name='Moderator')
+            support_role = discord.utils.get(guild.roles, name='Support')
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                    send_messages=False,
+                    read_message_history=False,
+                    connect=False,
+                    speak=False,
                 )
-                created.append(styled)
-            except Exception as e:
-                logger.warning(f'{styled} Kanal konnte nicht erstellt werden: {e}')
-        elif ch.name != styled:
-            try:
-                await ch.edit(name=styled)
-                created.append(f'{styled} (umbenannt)')
-            except Exception as e:
-                logger.warning(f'{ch.name} konnte nicht in {styled} umbenannt werden: {e}')
-    return created
+            }
+            for role, allowed in ((admin_role, 'Admin'), (mod_role, 'Moderator'), (support_role, 'Support')):
+                if role and allowed in cfg['allow']:
+                    overwrites[role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        use_application_commands=True,
+                    )
+            if bot_member:
+                overwrites[bot_member] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    manage_messages=True,
+                    manage_channels=True,
+                )
+
+            if ch is None:
+                ch = await guild.create_text_channel(
+                    styled,
+                    topic=cfg['topic'],
+                    overwrites=overwrites,
+                    reason='Auto-Setup: Staff-Kanal',
+                )
+                changed.append(styled)
+            else:
+                edits = {}
+                if ch.name != styled:
+                    edits['name'] = styled
+                if ch.topic != cfg['topic']:
+                    edits['topic'] = cfg['topic']
+                edits['overwrites'] = overwrites
+                await ch.edit(**edits, reason='Auto-Setup: Staff-Berechtigungen repariert')
+                changed.append(f'{styled} (Berechtigungen geprüft)')
+        except Exception as e:
+            logger.warning(f'{styled} Kanal-Setup fehlgeschlagen: {e}')
+
+    return changed
 
 
 def _staff_overwrite(guild, extra: dict | None = None) -> dict:
-    """Overwrites für Staff-Rollen (Admin, Moderator, Support) in normalen Kanälen."""
+    """Overwrites für echte Staff-Rollen. Niemals Manage Channels für Member-/Fun-Rollen vergeben."""
     ow = {
         'view_channel': True,
         'send_messages': True,
@@ -221,18 +261,38 @@ def _staff_overwrite(guild, extra: dict | None = None) -> dict:
     return result
 
 
+def _member_overwrite(is_voice: bool = False) -> discord.PermissionOverwrite:
+    """Sicheres Standardprofil für normale Mitglieder – ohne Kanal-/Rollenverwaltung."""
+    values = {
+        'view_channel': True,
+        'send_messages': True,
+        'read_message_history': True,
+        'add_reactions': True,
+        'embed_links': True,
+        'attach_files': True,
+        'use_application_commands': True,
+        'manage_channels': False,
+        'manage_permissions': False,
+        'manage_webhooks': False,
+    }
+    if is_voice:
+        values.update(connect=True, speak=True)
+    return discord.PermissionOverwrite(**values)
+
+
 async def apply_channel_permissions(guild, channel=None):
-    """Berechtigt Kanäle konsistent: @everyone sieht, nur Member schreibt,
-    Alle nicht-geschützten Rollen (Admin, Supporter, Media, VIP, etc.) haben volle Rechte.
-    Staff-/Ticket-Kanäle werden übersprungen.
-    Ist das Rules Gate aktiv, sieht @everyone nur den Regeln-Kanal.
-    Liefert Liste der angepassten Kanäle."""
+    """Setzt ein konservatives Kanal-Sicherheitsprofil.
+
+    @everyone darf keine Nachrichten senden und keine Slash-Commands ausführen.
+    Member/Verified bekommen nur normale Community-Rechte.
+    Nur Admin/Moderator/Support erhalten Moderationsrechte.
+    Beliebige Custom-Rollen werden NICHT mehr automatisch zu Moderatoren gemacht.
+    """
     targets = [channel] if channel else list(guild.channels)
     changed = []
 
     member_role = discord.utils.get(guild.roles, name='Member')
 
-    # Rules Gate: @everyone auf die übrigen Kanäle sperren
     rules_gate_active = False
     rules_channel_id = None
     try:
@@ -246,28 +306,22 @@ async def apply_channel_permissions(guild, channel=None):
     except Exception:
         pass
 
-    # Geschützte Rollen (keine Rechte-Vergabe): Owner, Manager, Bot Manager, Moderator + Bot-Rollen
-    protected_names = {'Owner', 'Manager', 'Bot Manager', 'Moderator'}
-    protected_roles = set()
-    for r in guild.roles:
-        if r.name in protected_names or r.is_bot_managed():
-            protected_roles.add(r)
+    staff_roles = {
+        name: discord.utils.get(guild.roles, name=name)
+        for name in ('Admin', 'Moderator', 'Support')
+    }
 
     for ch in targets:
         if isinstance(ch, discord.CategoryChannel):
             continue
         if base_name(ch.name) in STAFF_EXCLUDED_BASE:
             continue
-        if (hasattr(ch, 'category') and ch.category and ch.category.name == 'Tickets'):
+        if hasattr(ch, 'category') and ch.category and ch.category.name == 'Tickets':
             continue
 
         is_rules_channel = rules_gate_active and ch.id == rules_channel_id
         is_voice = isinstance(ch, discord.VoiceChannel)
-
-        if rules_gate_active:
-            everyone_view = is_rules_channel
-        else:
-            everyone_view = True
+        everyone_view = is_rules_channel if rules_gate_active else True
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(
@@ -275,44 +329,50 @@ async def apply_channel_permissions(guild, channel=None):
                 send_messages=False,
                 read_message_history=everyone_view,
                 use_application_commands=False,
-            ),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True),
+                manage_channels=False,
+                manage_permissions=False,
+                manage_webhooks=False,
+            )
         }
+
+        if guild.me:
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_messages=True,
+                manage_channels=True,
+                manage_permissions=True,
+                manage_webhooks=True,
+                use_application_commands=True,
+            )
+
         if member_role:
-            member_perm = {
-                'view_channel': True,
-                'send_messages': True,
-                'read_message_history': True,
-                'add_reactions': True,
-                'embed_links': True,
-                'attach_files': True,
-                'use_application_commands': True,
-            }
-            if is_voice:
-                member_perm['connect'] = True
-                member_perm['speak'] = True
-            overwrites[member_role] = discord.PermissionOverwrite(**member_perm)
+            overwrites[member_role] = _member_overwrite(is_voice)
 
-        staff = {'view_channel': True, 'send_messages': True, 'read_message_history': True,
-                 'use_application_commands': True, 'embed_links': True, 'attach_files': True,
-                 'manage_messages': True}
+        staff_perm = {
+            'view_channel': True,
+            'send_messages': True,
+            'read_message_history': True,
+            'use_application_commands': True,
+            'embed_links': True,
+            'attach_files': True,
+            'manage_messages': True,
+            'manage_channels': False,
+            'manage_permissions': False,
+            'manage_webhooks': False,
+        }
         if is_voice:
-            staff['connect'] = True
-            staff['speak'] = True
-            staff['move_members'] = True
+            staff_perm.update(connect=True, speak=True, move_members=True)
 
-        # Alle nicht-geschützten Rollen mit vollen Rechten
-        for role in guild.roles:
-            if role in protected_roles or role == guild.default_role:
-                continue
-            if role in overwrites:
-                continue  # bereits gesetzt (Member, Bot)
-            overwrites[role] = discord.PermissionOverwrite(**staff)
+        for role in staff_roles.values():
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(**staff_perm)
 
         try:
-            await ch.edit(overwrites=overwrites)
+            await ch.edit(overwrites=overwrites, reason='Auto-Setup: sichere Kanal-Berechtigungen')
             changed.append(ch.name)
         except Exception as e:
-            logger.warning(f'Berechtigungen für #{ch.name} fehlgeschlagen: {e}')
+            logger.warning(f'Berechtigungen für #{getattr(ch, "name", "?")} fehlgeschlagen: {e}')
 
     return changed
