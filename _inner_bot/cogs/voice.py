@@ -33,13 +33,12 @@ class TranscriptionSink(voice_recv.AudioSink):
         self.loop = loop
         self.on_chunk = on_chunk
         self.buffers = defaultdict(bytearray)
-        self.started = {}
         self.lock = threading.Lock()
         self.bytes_per_second = 48000 * 2 * 2  # 48 kHz, stereo, 16-bit PCM
         self.target_bytes = self.bytes_per_second * CHUNK_SECONDS
 
     def write(self, user, data):
-        if user is None or not getattr(user, "bot", False) is False:
+        if user is None or getattr(user, "bot", False):
             return
         pcm = getattr(data, "pcm", None)
         if not pcm:
@@ -52,9 +51,7 @@ class TranscriptionSink(voice_recv.AudioSink):
                 return
             payload = bytes(buf)
             del buf[:]
-        asyncio.run_coroutine_threadsafe(
-            self.on_chunk(user, payload), self.loop
-        )
+        asyncio.run_coroutine_threadsafe(self.on_chunk(user, payload), self.loop)
 
     def cleanup(self):
         with self.lock:
@@ -65,11 +62,11 @@ class VoiceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.sessions = {}
-        self._client = None
 
     voice = app_commands.Group(name="voice", description="Voice-Channel und Transkription")
 
-    def _client_ready(self):
+    @staticmethod
+    def _client_ready():
         if OpenAI is None:
             return None, "Das OpenAI-Paket ist nicht installiert."
         if not os.environ.get("OPENAI_API_KEY"):
@@ -158,7 +155,7 @@ class VoiceCog(commands.Cog):
                     pass
 
             loop = asyncio.get_running_loop()
-            session = {"enabled": True, "vc": vc, "channel": target, "client": client}
+            session = {"enabled": True, "vc": vc, "channel": target}
 
             async def on_chunk(user, pcm):
                 if not session["enabled"]:
@@ -181,7 +178,7 @@ class VoiceCog(commands.Cog):
             vc.listen(sink)
             await interaction.response.send_message(
                 f"📝 **Live-Transkription gestartet.** Ausgabe: {target.mention}\n"
-                "Die Sprache wird nur in kurzen Audioabschnitten verarbeitet; diese Cog speichert keine Audiodateien dauerhaft."
+                "Audio wird nur kurz im Speicher verarbeitet und von dieser Cog nicht dauerhaft gespeichert."
             )
         else:
             session = self.sessions.pop(interaction.guild_id, None)
@@ -201,10 +198,9 @@ class VoiceCog(commands.Cog):
             text = "🔴 Nicht im Voice-Channel"
         else:
             text = f"🟢 Verbunden mit **{vc.channel.name}**"
+            text += f"\n📝 Transkription: **{'AN' if session and session.get('enabled') else 'AUS'}**"
             if session and session.get("enabled"):
-                text += f"\n📝 Transkription: **AN** → {session['channel'].mention}"
-            else:
-                text += "\n📝 Transkription: **AUS**"
+                text += f" → {session['channel'].mention}"
         await interaction.response.send_message(text)
 
     @staticmethod
