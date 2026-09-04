@@ -1,11 +1,8 @@
-"""Voice receive + local speech-to-text transcription.
+"""Local Discord voice transcription with faster-whisper.
 
-Transcripts are stored as UTF-8 text files below ``transcripts/``.  A transcript
-file is named after the speakers who have talked in that session, for example:
-``Alice_und_Bob_2026-09-04_0730.txt``.
-
-Audio is processed in memory and is not written to disk by this cog.
-Speech recognition uses faster-whisper locally; no OpenAI API key is required.
+Audio is processed in memory only. Text transcripts are persisted below
+``transcripts/<guild_id>/<date>/`` and the filename always contains the names
+of every speaker who has spoken in that session.
 """
 
 import asyncio
@@ -27,26 +24,21 @@ try:
 except Exception:
     WhisperModel = None
 
-
 CHUNK_SECONDS = max(3, int(os.environ.get("VOICE_TRANSCRIBE_CHUNK_SECONDS", "5")))
 WHISPER_MODEL = os.environ.get("VOICE_WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.environ.get("VOICE_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("VOICE_WHISPER_COMPUTE_TYPE", "int8")
 TRANSCRIPTS_DIR = Path(os.environ.get("TRANSCRIPTS_DIR", "transcripts"))
-MAX_FILENAME_LENGTH = 100
 
 
 class TranscriptionSink(voice_recv.AudioSink):
-    """Collect PCM per speaker and hand complete chunks to the asyncio loop."""
-
     def __init__(self, loop, on_chunk):
         super().__init__()
         self.loop = loop
         self.on_chunk = on_chunk
         self.buffers = defaultdict(bytearray)
         self.lock = threading.Lock()
-        self.bytes_per_second = 48000 * 2 * 2  # 48 kHz, stereo, 16-bit PCM
-        self.target_bytes = self.bytes_per_second * CHUNK_SECONDS
+        self.target_bytes = 48000 * 2 * 2 * CHUNK_SECONDS
 
     def write(self, user, data):
         if user is None or getattr(user, "bot", False):
@@ -54,9 +46,8 @@ class TranscriptionSink(voice_recv.AudioSink):
         pcm = getattr(data, "pcm", None)
         if not pcm:
             return
-        user_id = int(user.id)
         with self.lock:
-            buf = self.buffers[user_id]
+            buf = self.buffers[int(user.id)]
             buf.extend(pcm)
             if len(buf) < self.target_bytes:
                 return
@@ -70,69 +61,75 @@ class TranscriptionSink(voice_recv.AudioSink):
 
 
 class VoiceCog(commands.Cog):
+    voice = app_commands.Group(name="voice", description="Voice-Channel und Transkription")
+
     def __init__(self, bot):
         self.bot = bot
         self.sessions = {}
         self._model = None
         self._model_lock = threading.Lock()
 
-    voice = app_commands.Group(name="voice", description="Voice-Channel und Transkription")
-
     def _get_model(self):
         if WhisperModel is None:
-            raise RuntimeError("faster-whisper ist nicht installiert. Installiere die requirements.txt neu.")
+            raise RuntimeError("faster-whisper ist nicht installiert. requirements.txt neu installieren.")
         if self._model is None:
             with self._model_lock:
                 if self._model is None:
-                    print(f"[VOICE STT] Lade faster-whisper Modell: {WHISPER_MODEL} ({WHISPER_DEVICE}/{WHISPER_COMPUTE_TYPE})")
-                    self._model = WhisperModel(
-                        WHISPER_MODEL,
-                        device=WHISPER_DEVICE,
-                        compute_type=WHISPER_COMPUTE_TYPE,
-                    )
+                    print(f"[VOICE STT] Lade {WHISPER_MODEL} ({WHISPER_DEVICE}/{WHISPER_COMPUTE_TYPE}) ...")
+                    self._model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
                     print("[VOICE STT] Modell geladen.")
         return self._model
 
     @staticmethod
-    def _safe_name(value: str) -> str:
-        value = re.sub(r"[^A-Za-z0-9ÄÖÜäöüß _-]+", "", value).strip()
-        value = re.sub(r"\s+", "_", value)
-        return value[:MAX_FILENAME_LENGTH] or "Unbekannt"
+    def _safe_name(name):
+        name = re.sub(r"[^A-Za-z0-9ÄÖÜäöüß _-]+", "", name).strip()
+        return re.sub(r"\s+", "_", name)[:60] or "Unbekannt"
 
-    @staticmethod
-    def _session_folder(guild_id: int, started_at: datetime) -> Path:
-        return TRANSCRIPTS_DIR / str(guild_id) / started_at.strftime("%Y-%m-%d")
+    def _folder(self, session):
+        return TRANSCRIPTS_DIR / str(session["guild_id"]) / session["started_at"].strftime("%Y-%m-%d")
 
-    def _transcript_path(self, session) -> Path:
-        names = sorted(session["speakers"].values(), key=str.casefold)
-        speaker_part = "_und_".join(self._safe_name(name) for name in names) or "Unbekannt"
-        filename = f"{speaker_part}_{session['started_at'].strftime('%Y-%m-%d_%H-%M-%S')}.txt"
-        return self._session_folder(session["guild_id"], session["started_at"]) / filename
+    def _path(self, session):
+        speakers = sorted(session["speakers"].values(), key=str.casefold)
+        names = "_und_".join(self._safe_name(x) for x in speakers) or "Unbekannt"
+        stamp = session["started_at"].strftime("%Y-%m-%d_%H-%M-%S")
+        return self._folder(session) / f"{names}_{stamp}.txt"
 
-    def _write_transcript(self, session, speaker: str, text: str):
-        path = self._transcript_path(session)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            header = (
-                f"Discord Voice-Transkript\n"
+    def _save_line(self, session, speaker, text):
+        session["speakers"][int(session["current_user_id"])] = speaker
+        new_path = self._path(session)
+        old_path = session.get("path")
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # If another person starts talking, rename the live transcript so the
+        # filename always contains all speakers who have talked in the session.
+        if old_path and old_path.exists() and old_path != new_path:
+            try:
+                old_path.rename(new_path)
+            except OSError:
+                if new_path.exists():
+                    with old_path.open("r", encoding="utf-8") as src, new_path.open("a", encoding="utf-8") as dst:
+                        dst.write(src.read())
+                    old_path.unlink(missing_ok=True)
+
+        if not new_path.exists():
+            speakers = ", ".join(sorted(session["speakers"].values(), key=str.casefold))
+            new_path.write_text(
+                "Discord Voice-Transkript\n"
                 f"Server-ID: {session['guild_id']}\n"
                 f"Start: {session['started_at'].isoformat(timespec='seconds')}\n"
-                f"Sprecher: {', '.join(sorted(session['speakers'].values(), key=str.casefold))}\n"
-                f"{'=' * 60}\n\n"
+                f"Sprecher: {speakers}\n"
+                f"{'=' * 60}\n\n",
+                encoding="utf-8",
             )
-            path.write_text(header, encoding="utf-8")
         timestamp = datetime.now().strftime("%H:%M:%S")
-        with path.open("a", encoding="utf-8") as handle:
+        with new_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {speaker}: {text}\n")
-        session["path"] = path
+        session["path"] = new_path
 
     @voice.command(name="join", description="Bot kommt in deinen Voice-Channel")
     async def join(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            await interaction.response.send_message("Nur auf einem Server möglich.", ephemeral=True)
-            return
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.response.send_message("Du musst zuerst in einem Voice-Channel sein.", ephemeral=True)
+        if not interaction.guild or not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message("Du musst auf einem Server in einem Voice-Channel sein.", ephemeral=True)
             return
         channel = interaction.user.voice.channel
         await interaction.response.defer()
@@ -141,9 +138,8 @@ class VoiceCog(commands.Cog):
             if vc and vc.is_connected():
                 if vc.channel.id != channel.id:
                     await vc.move_to(channel)
-                await interaction.followup.send(f"🔊 Ich bin jetzt in **{channel.name}**.")
-                return
-            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            else:
+                await channel.connect(cls=voice_recv.VoiceRecvClient)
             await interaction.followup.send(f"🔊 Ich bin jetzt in **{channel.name}**.")
         except Exception as exc:
             await interaction.followup.send(f"❌ Voice-Verbindung fehlgeschlagen: `{str(exc)[:300]}`")
@@ -163,9 +159,9 @@ class VoiceCog(commands.Cog):
                 await vc.disconnect()
             except Exception:
                 pass
-        await interaction.response.send_message("👋 Voice-Channel verlassen und Transkription beendet.")
+        await interaction.response.send_message("👋 Voice verlassen und Transkription beendet.")
 
-    @voice.command(name="transcribe", description="Startet/stoppt die Live-Transkription")
+    @voice.command(name="transcribe", description="Startet oder stoppt die Live-Transkription")
     @app_commands.describe(enabled="True = starten, False = stoppen", channel="Textkanal für das Live-Transkript")
     async def transcribe(self, interaction: discord.Interaction, enabled: bool, channel: discord.TextChannel | None = None):
         if not interaction.guild:
@@ -175,79 +171,7 @@ class VoiceCog(commands.Cog):
             await interaction.response.send_message("Du musst in einem Voice-Channel sein.", ephemeral=True)
             return
 
-        if enabled:
-            try:
-                self._get_model()
-            except Exception as exc:
-                await interaction.response.send_message(f"❌ Lokale Transkription nicht verfügbar: `{str(exc)[:300]}`", ephemeral=True)
-                return
-
-            target = channel or interaction.channel
-            if not isinstance(target, discord.TextChannel):
-                await interaction.response.send_message("Bitte einen normalen Textkanal angeben.", ephemeral=True)
-                return
-
-            vc = interaction.guild.voice_client
-            if not vc or not vc.is_connected():
-                try:
-                    vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-                except Exception as exc:
-                    await interaction.response.send_message(f"❌ Konnte Voice nicht beitreten: `{str(exc)[:300]}`", ephemeral=True)
-                    return
-            if not isinstance(vc, voice_recv.VoiceRecvClient):
-                await interaction.response.send_message(
-                    "❌ Der Bot ist bereits mit einem normalen Voice-Client verbunden. Für Transkription muss die Voice-Session mit Voice Receive verbunden werden.",
-                    ephemeral=True,
-                )
-                return
-
-            old = self.sessions.get(interaction.guild_id)
-            if old:
-                old["enabled"] = False
-                try:
-                    vc.stop_listening()
-                except Exception:
-                    pass
-
-            now = datetime.now()
-            loop = asyncio.get_running_loop()
-            session = {
-                "enabled": True,
-                "vc": vc,
-                "channel": target,
-                "guild_id": interaction.guild_id,
-                "started_at": now,
-                "speakers": {},
-                "path": None,
-            }
-
-            async def on_chunk(user, pcm):
-                if not session["enabled"]:
-                    return
-                session["speakers"][int(user.id)] = user.display_name
-                try:
-                    text = await asyncio.to_thread(self._transcribe_pcm, pcm)
-                except Exception as exc:
-                    print(f"[VOICE STT] {exc}")
-                    return
-                if not text:
-                    return
-                self._write_transcript(session, user.display_name, text)
-                try:
-                    await target.send(f"🎙️ **{discord.utils.escape_markdown(user.display_name)}:** {text[:1800]}")
-                except discord.HTTPException:
-                    pass
-
-            sink = TranscriptionSink(loop, on_chunk)
-            session["sink"] = sink
-            self.sessions[interaction.guild_id] = session
-            vc.listen(sink)
-            await interaction.response.send_message(
-                f"📝 **Live-Transkription gestartet.** Ausgabe: {target.mention}\n"
-                f"💾 Speicherung: `{self._session_folder(interaction.guild_id, now)}`\n"
-                "🤖 Die Spracherkennung läuft lokal mit faster-whisper – kein OpenAI nötig."
-            )
-        else:
+        if not enabled:
             session = self.sessions.pop(interaction.guild_id, None)
             if session:
                 session["enabled"] = False
@@ -256,70 +180,121 @@ class VoiceCog(commands.Cog):
                 except Exception:
                     pass
                 path = session.get("path")
-                extra = f" Datei: `{path}`" if path else " Es wurde noch kein Text erkannt."
+                await interaction.response.send_message(
+                    "🛑 Transkription gestoppt." + (f" Gespeichert: `{path}`" if path else " Noch kein Text erkannt.")
+                )
             else:
-                extra = ""
-            await interaction.response.send_message("🛑 Live-Transkription gestoppt." + extra)
+                await interaction.response.send_message("🛑 Es läuft keine Transkription.")
+            return
+
+        try:
+            self._get_model()
+        except Exception as exc:
+            await interaction.response.send_message(f"❌ Lokale Transkription nicht verfügbar: `{str(exc)[:300]}`", ephemeral=True)
+            return
+
+        target = channel or interaction.channel
+        if not isinstance(target, discord.TextChannel):
+            await interaction.response.send_message("Bitte einen normalen Textkanal angeben.", ephemeral=True)
+            return
+
+        vc = interaction.guild.voice_client
+        if not vc or not vc.is_connected():
+            try:
+                vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            except Exception as exc:
+                await interaction.response.send_message(f"❌ Konnte Voice nicht beitreten: `{str(exc)[:300]}`", ephemeral=True)
+                return
+        if not isinstance(vc, voice_recv.VoiceRecvClient):
+            await interaction.response.send_message("❌ Der vorhandene Voice-Client unterstützt kein Voice Receive.", ephemeral=True)
+            return
+
+        old = self.sessions.get(interaction.guild_id)
+        if old:
+            old["enabled"] = False
+            try:
+                vc.stop_listening()
+            except Exception:
+                pass
+
+        now = datetime.now()
+        session = {
+            "enabled": True,
+            "vc": vc,
+            "channel": target,
+            "guild_id": interaction.guild_id,
+            "started_at": now,
+            "speakers": {},
+            "path": None,
+            "current_user_id": None,
+        }
+        loop = asyncio.get_running_loop()
+
+        async def on_chunk(user, pcm):
+            if not session["enabled"]:
+                return
+            session["current_user_id"] = int(user.id)
+            try:
+                text = await asyncio.to_thread(self._transcribe_pcm, pcm)
+            except Exception as exc:
+                print(f"[VOICE STT] {exc}")
+                return
+            if not text:
+                return
+            self._save_line(session, user.display_name, text)
+            try:
+                await target.send(f"🎙️ **{discord.utils.escape_markdown(user.display_name)}:** {text[:1800]}")
+            except discord.HTTPException:
+                pass
+
+        sink = TranscriptionSink(loop, on_chunk)
+        session["sink"] = sink
+        self.sessions[interaction.guild_id] = session
+        vc.listen(sink)
+        await interaction.response.send_message(
+            f"📝 **Live-Transkription gestartet!** Ausgabe: {target.mention}\n"
+            f"💾 Dateien: `{self._folder(session)}`\n"
+            "🤖 Speech-to-Text läuft lokal mit faster-whisper – kein OpenAI nötig."
+        )
 
     @voice.command(name="status", description="Zeigt den Voice-Status")
     async def status(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client if interaction.guild else None
         session = self.sessions.get(interaction.guild_id)
         if not vc or not vc.is_connected():
-            text = "🔴 Nicht im Voice-Channel"
-        else:
-            text = f"🟢 Verbunden mit **{vc.channel.name}**"
-            text += f"\n📝 Transkription: **{'AN' if session and session.get('enabled') else 'AUS'}**"
-            if session and session.get("enabled"):
-                text += f" → {session['channel'].mention}"
-                text += f"\n👥 Sprecher: {len(session['speakers'])}"
-                if session.get("path"):
-                    text += f"\n💾 Datei: `{session['path'].name}`"
+            await interaction.response.send_message("🔴 Nicht im Voice-Channel")
+            return
+        text = f"🟢 **{vc.channel.name}**\n📝 Transkription: **{'AN' if session and session.get('enabled') else 'AUS'}**"
+        if session:
+            text += f"\n👥 Sprecher: {len(session['speakers'])}"
+            if session.get("path"):
+                text += f"\n💾 `{session['path'].name}`"
         await interaction.response.send_message(text)
 
-    @voice.command(name="history", description="Zeigt gespeicherte Transkripte auf diesem Server")
+    @voice.command(name="history", description="Zeigt die gespeicherten Transkripte dieses Servers")
     async def history(self, interaction: discord.Interaction):
         folder = TRANSCRIPTS_DIR / str(interaction.guild_id)
-        if not folder.exists():
-            await interaction.response.send_message("📂 Noch keine Transkripte gespeichert.", ephemeral=True)
-            return
-        files = sorted(folder.rglob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(folder.rglob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.exists() else []
         if not files:
             await interaction.response.send_message("📂 Noch keine Transkripte gespeichert.", ephemeral=True)
             return
-        lines = [f"📚 **Letzte {min(len(files), 20)} Transkripte:**"]
-        for path in files[:20]:
-            lines.append(f"• `{path.relative_to(folder)}`")
+        lines = [f"📚 **Letzte {min(20, len(files))} Transkripte:**"]
+        lines.extend(f"• `{p.relative_to(folder)}`" for p in files[:20])
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @voice.command(name="clear", description="Löscht alle gespeicherten Transkripte dieses Servers")
+    @voice.command(name="clear", description="Löscht alle Transkripte dieses Servers")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def clear(self, interaction: discord.Interaction):
         folder = TRANSCRIPTS_DIR / str(interaction.guild_id)
-        if not folder.exists():
-            await interaction.response.send_message("📂 Es gibt nichts zu löschen.", ephemeral=True)
-            return
         count = 0
-        for path in folder.rglob("*.txt"):
-            try:
-                path.unlink()
-                count += 1
-            except OSError:
-                pass
+        if folder.exists():
+            for path in folder.rglob("*.txt"):
+                try:
+                    path.unlink()
+                    count += 1
+                except OSError:
+                    pass
         await interaction.response.send_message(f"🗑️ **{count}** Transkript-Datei(en) gelöscht.", ephemeral=True)
-
-    @staticmethod
-    def _transcribe_pcm(pcm):
-        # faster-whisper accepts file-like audio, so encode the received PCM as WAV in memory.
-        wav = io.BytesIO()
-        with wave.open(wav, "wb") as wf:
-            wf.setnchannels(2)
-            wf.setsampwidth(2)
-            wf.setframerate(48000)
-            wf.writeframes(pcm)
-        wav.seek(0)
-        # The model is attached by the caller through the instance method below.
-        raise RuntimeError("Internal transcription routing error")
 
     def _transcribe_pcm(self, pcm):
         model = self._get_model()
@@ -330,8 +305,8 @@ class VoiceCog(commands.Cog):
             wf.setframerate(48000)
             wf.writeframes(pcm)
         wav.seek(0)
-        segments, _info = model.transcribe(wav, beam_size=5, vad_filter=True)
-        return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+        segments, _ = model.transcribe(wav, beam_size=5, vad_filter=True)
+        return " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
 
 
 async def setup(bot):
