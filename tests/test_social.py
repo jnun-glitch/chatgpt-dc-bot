@@ -38,6 +38,11 @@ def test_normalize_rejects_unknown_provider():
         normalize_account("unknown", "creator")
 
 
+def test_normalize_rejects_empty_account():
+    with pytest.raises(ValueError):
+        normalize_account("twitch", "   ")
+
+
 def test_normalize_trims_whitespace():
     assert normalize_account("twitch", "  @TestStreamer  ") == "teststreamer"
 
