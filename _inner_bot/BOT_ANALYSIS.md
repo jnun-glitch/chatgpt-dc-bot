@@ -1,331 +1,203 @@
-# 🔎 Bot-Gesamtanalyse
-
-Diese Analyse betrachtet den Discord-Bot als Gesamtprojekt und **nicht** den Bad-Word-Filter. Sie ist bewusst so formuliert, dass sie keine problematischen Begriffe aus Moderationslisten wiederholt.
+# 🔎 Bot-Gesamtanalyse – aktueller Stand
 
 Stand: 2026-09-04
 
----
+## Bewertung
 
-## ⭐ Gesamtbewertung
+**Aktuell: ca. 8/10 als Entwicklungsstand.**
 
-**Aktueller Eindruck: 7,2 / 10**
+Das Projekt hat inzwischen viele eigenständige Cogs, eine zentrale DB-Schicht, Dashboard/Health, Ticket-System, DeepSeek-Ticketanalyse, lokale Voice-Transkription und Musik. Die wichtigsten strukturellen Fehler aus der vorherigen Analyse wurden im Core behoben.
 
-Das Projekt hat bereits ein brauchbares Grundgerüst und viele Module. Die größte Stärke ist die modulare Struktur. Der größte Nachholbedarf liegt bei Tests, Fehlerbehandlung, Konfiguration, Sicherheit, Datenbank-Qualität und einer klaren Trennung zwischen Bot-Logik und externen Diensten.
+## ✅ Gerade behoben
 
----
+### Bot-Core
+- Umstieg von `discord.Client` auf `commands.Bot`.
+- `setup_hook()` lädt Extensions vor dem Slash-Command-Sync.
+- `on_message()` ruft jetzt `process_commands()` auf, sodass klassische `!`-Commands wieder funktionieren.
+- Cogs werden automatisch aus `cogs/*.py` entdeckt, statt dass eine veraltete manuelle Liste gepflegt werden muss.
+- Einzelne kaputte Cogs verhindern nicht mehr den kompletten Start; der Fehler wird protokolliert.
 
-## 🟢 Was gut ist
+### Permissions
+- Zentrale Permission-Helfer in `core/permissions.py`.
+- Server-Konfiguration ist auf Administratoren bzw. Manage-Server beschränkt.
+- `/config-reset` nutzt jetzt die vorhandene `set_guild_config`-Schicht statt eine nicht existierende `key`-Spalte in `guild_config` anzusprechen.
 
-### 1. Modulare Architektur — 9/10
-- Funktionen sind auf mehrere Cogs/Core-Module verteilt.
-- Neue Features können grundsätzlich ergänzt werden, ohne eine einzelne riesige Datei zu erzeugen.
-- Gemeinsame Funktionen liegen im `core`-Bereich.
-- Das erleichtert langfristige Wartung.
+### Musik
+Die Music-Cog wurde erweitert um:
+- Play
+- Pause/Resume
+- Skip
+- Stop
+- Queue
+- Remove
+- Clear
+- Shuffle
+- Loop/Repeat
+- Lautstärke
+- Now Playing
 
-### 2. Discord-Bot-Grundgerüst — 8/10
-- `discord.py` wird verwendet.
-- Slash Commands und klassische Commands können parallel genutzt werden.
-- Intents und CommandTree sind bereits vorhanden.
-- Es gibt einen zentralen Startpunkt und einen Restart-Mechanismus.
+Die aktuelle Architektur bleibt bewusst leichtgewichtig mit yt-dlp + FFmpeg. Für sehr große Bots wäre später Lavalink/Wavelink die nächste Ausbaustufe.
 
-### 3. Monitoring — 8/10
-- Health-Endpunkt vorhanden.
-- Bot-Latenz kann überwacht werden.
-- Geladene Cogs und erwartete Cogs werden berücksichtigt.
-- Verbindungsereignisse werden protokolliert.
+### Voice-Transkription
+- lokale Spracherkennung mit `faster-whisper`
+- keine OpenAI-API für Voice nötig
+- Speicherung unter einem zentralen Datenordner
+- Dateiname enthält die bisher erkannten Sprecher
+- Live-Ausgabe in Discord
+- `/voice history`
+- `/voice clear`
+- Audio wird nicht als Datei vom Voice-Cog persistiert
 
-### 4. Logging — 8/10
-- Zentrales Logging ist vorhanden.
-- Fehler werden an mehreren Stellen abgefangen.
-- Moderationsereignisse können in Discord-Kanälen protokolliert werden.
+### Ticket-Transcripts
+- HTML-Ausgabe wird jetzt escaped, bevor Benutzertexte in HTML eingesetzt werden.
+- Ticket-Transcripts landen im zentralen Transcript-Datenpfad.
 
-### 5. Datenbank — 7/10
-- Eine zentrale DB-Schicht existiert.
-- Warnungen und Moderationsdaten können gespeichert werden.
-- Ticket-Daten und weitere Bot-Daten sind bereits vorgesehen.
+### Abhängigkeiten / Betrieb
+- `faster-whisper` und `python-dotenv` stehen in `requirements.txt`.
+- `.gitignore` schützt `.env`, DB-/Runtime-Daten, Logs und lokale Transcripts vor versehentlichem Commit.
 
-### 6. Ticket-System — 8/10
-- Das Projekt besitzt ein eigenes Ticket-Modul.
-- Ticket-Daten können persistent verarbeitet werden.
-- Die geplante KI-Unterstützung passt grundsätzlich gut als zusätzliche Schicht dazu.
+### Tests / CI
+- GitHub Actions prüft Python-Kompilierung, Tests und einen Import-Smoke-Test.
+- Erste automatisierte Tests decken die zentrale Permission-Schicht ab.
 
----
+## 🔴 Noch offene Punkte
 
-## 🟡 Was okay ist, aber verbessert werden sollte
+### 1. Datenbankarchitektur
+`core/db.py` ist weiterhin sehr groß und bündelt viele fachlich unterschiedliche Bereiche. Langfristig sollten einzelne Services entstehen, etwa:
 
-### 7. Konfiguration — 6/10
-Problem:
-- Viele Einstellungen können schnell über Umgebungsvariablen und verstreute Konstanten wachsen.
+```text
+core/data/
+  tickets.py
+  moderation.py
+  levels.py
+  server_config.py
+  giveaways.py
+  stats.py
+```
 
-Verbesserung:
-- Eine zentrale Config-Struktur.
-- Klare Liste aller benötigten Environment-Variablen.
-- Startprüfung, die fehlende Pflichtwerte verständlich meldet.
+Die SQLite-Verbindung ist global gecacht. Für mehrere Prozesse/Instanzen sollte später eine klar definierte DB-Abstraktion oder PostgreSQL eingeplant werden.
 
-### 8. Fehlerbehandlung — 6/10
-Problem:
-- Viele `try/except`-Blöcke verhindern Abstürze, können aber echte Programmierfehler verstecken.
+### 2. AutoMod
+`automod.py` greift direkt auf `_BAD_WORD_RE` zu. Dadurch kann ein Teil der neueren Normalisierungslogik aus `core/badwords.py` umgangen werden. Das sollte auf eine gemeinsame `find_bad_word()`- bzw. `check_text()`-API umgestellt werden.
 
-Verbesserung:
-- Fehler nach Typ unterscheiden.
-- Erwartete Fehler gezielt behandeln.
-- Unerwartete Fehler mit Stacktrace loggen.
-- Nutzerfreundliche Fehlermeldungen ausgeben.
+Außerdem sind einige Warn-/Timeout-Counter nur im Speicher. Nach einem Bot-Neustart gehen diese Zustände verloren.
 
-### 9. Commands — 7/10
-Gut:
-- Slash Commands sind vorhanden.
-- Es gibt einen globalen Command-Error-Handler.
+### 3. Birthday-Cog
+`birthdays.py` verwendet klassische Textcommands und alte direkte DB-Zugriffe. Die Tabelle muss garantiert durch `init_db()` existieren und die Zeitbehandlung sollte konsequent timezone-aware werden.
 
-Verbesserung:
-- Einheitliche Permission-Prüfungen.
-- Cooldowns für sensible Commands.
-- Konsistente Antworten bei fehlenden Rechten.
-- Command-Dokumentation.
+### 4. Private VC / VC-Protect
+Beide Cogs reagieren auf Voice-State-Events. Ihre Zuständigkeiten sollten klar getrennt werden, damit Schutzregeln, temporäre Channels und Voice-Receive nicht unerwartet miteinander kollidieren.
 
-### 10. Datenbank-Zugriffe — 6/10
-Problem:
-- Datenbankzugriffe sollten möglichst zentral und konsistent erfolgen.
-- Wiederholte Open/Close-Zyklen können später unnötig werden.
+### 5. Musik
+Die aktuelle Music-Cog ist deutlich besser, aber noch kein vollwertiges Lavalink-System. Für größere Server sind später Backend-Ausfallsicherheit, Playlists, bessere Plattformunterstützung, Caching und persistente Queue-Zustände sinnvoll.
 
-Verbesserung:
-- DB-Helper für Standardoperationen.
-- Transaktionen sauber kapseln.
-- Indizes prüfen.
-- Migrationen für Schemaänderungen einführen.
-
----
-
-## 🔴 Größte Schwächen
-
-### 11. Tests — 4/10
-Das ist aktuell einer der größten Punkte.
-
-Empfehlung:
-- Unit-Tests für Core-Funktionen.
-- Tests für Ticket-Abläufe.
-- Tests für DB-Operationen.
-- Tests für Command-Berechtigungen.
-- Tests für Fehlerfälle.
-- Ein kleiner automatisierter Smoke-Test bei jedem Push.
-
-**Ziel: mindestens 70–80 % der wichtigen Core-Logik automatisch testen.**
-
-### 12. CI/CD — 4/10
-Es sollte ein GitHub-Actions-Workflow existieren, der bei Änderungen mindestens:
-
-1. Python-Syntax prüft
-2. Imports prüft
-3. Tests ausführt
-4. grundlegende Codequalität prüft
-5. Build/Start-Smoke-Test ausführt
-
-So werden kaputte Änderungen erkannt, bevor sie auf den Server gelangen.
-
-### 13. Secrets & Sicherheit — 6/10
-Positiv:
-- Der Discord-Token wird über eine Environment-Variable geladen.
-
-Verbesserung:
-- Niemals API-Keys in Dateien speichern.
-- Alle externen Schlüssel ausschließlich über Environment-Variablen.
-- Startup-Warnung bei fehlenden Secrets.
-- Keine Secrets in Logs ausgeben.
-- Berechtigungen jedes Admin-Features prüfen.
-
-### 14. Skalierbarkeit — 6/10
-Aktuell für einen kleineren Bot okay.
-
-Bei mehr Servern sollte man besonders beachten:
-- Rate Limits
-- DB-Locks
-- große Ticket-Verläufe
-- große Log-Mengen
-- parallele API-Anfragen
-- Memory-Verbrauch
-
----
-
-## 🤖 KI-/API-System
-
-### Aktueller Architektur-Punkt
-Die KI sollte **kein unkontrollierter Bot-Agent** sein.
-
-Besser:
-
-`Discord Event → Ticket/Feature → Kontext sammeln → API-Service → Ergebnis validieren → Discord-Aktion → Logging`
-
-Dadurch bleibt die eigentliche Bot-Logik unter Kontrolle.
-
-### Für KI-Tickets besonders wichtig
-- Maximale Nachrichtenanzahl pro Analyse.
-- Maximale Eingabelänge.
-- Timeout.
-- API-Fehler abfangen.
-- Rate-Limit-Schutz.
-- Kostenkontrolle.
-- Keine geheimen Daten an externe APIs schicken.
-- Ergebnis vor einer automatischen Moderationsaktion validieren.
-
----
-
-## 🎫 Ticket-System: empfohlene nächste Stufe
-
-### V1 — stabil
-- Ticket erstellen
-- Ticket schließen
-- Ticket löschen/archivieren
-- Berechtigungen
-- Logs
-- DB-Speicherung
-
-### V2 — komfortabel
-- Ticket-Kategorien
-- Prioritäten
-- Zuständige Teammitglieder
-- Transcript
-- Suche
-- Statistiken
-
-### V3 — intelligente Unterstützung
-- Ticket-Zusammenfassung
-- erkannte Kategorie
-- erkannte Priorität
-- Vorschlag für Antwort
-- ähnliche alte Tickets finden
-- Team kann Ergebnis bestätigen oder ablehnen
-
-Wichtig: Die KI sollte standardmäßig **Vorschläge liefern**, statt automatisch kritische Aktionen auszuführen.
-
----
-
-## 📊 Dashboard
-
-### Gut
-- Web-Dashboard passt sehr gut zum Projekt.
-- Health-Informationen können dort angezeigt werden.
-
-### Noch besser
-Dashboard sollte später anzeigen:
-- Bot online/offline
-- Latenz
-- Serveranzahl
-- Useranzahl
-- geladene Module
-- Fehler der letzten 24 Stunden
-- Tickets heute
-- Moderationsstatistiken
+### 6. Dashboard
+Der Health-Endpunkt ist vorhanden, aber das Dashboard sollte noch echte Module anzeigen:
+- DB-Status
 - API-Status
-- Datenbankstatus
+- letzte Fehler
+- Command-Nutzung
+- aktive Tickets
+- Voice-Sessions
+- Music-Sessions
 
----
+### 7. Permission-System
+`core/permissions.py` ist der Anfang. Das Ziel sollte ein serverkonfigurierbares Regelwerk wie bei Red-DiscordBot sein: global, pro Server, pro Rolle, pro User und pro Channel. Red ist explizit modular aufgebaut und erlaubt das Aktivieren/Deaktivieren von Cogs sowie umfangreiche Konfiguration und Community-Cogs. Die Architektur ist deshalb eine gute Referenz, aber kein Code soll kopiert werden.
 
-## 🚀 Prioritätenliste
+## 🔴 Wichtigste technische Schulden
 
-### 🔥 Priorität 1
-1. Automatische Tests
-2. GitHub Actions CI
-3. Einheitliche Config
-4. saubere DB-Helper
-5. API-Timeouts und Rate Limits
-6. zentraler Error-Handler
+```text
+Core-Bot                    ✅ deutlich verbessert
+Cog-Discovery               ✅ verbessert
+Slash Sync                  ✅ verbessert
+Prefix Commands             ✅ repariert
+Permission Layer            🟡 Basis vorhanden
+AutoMod                     🟡 vereinheitlichen
+SQLite/Data Layer            🟡 weiter aufteilen
+Music                        🟡 funktional, später Lavalink
+Voice Receive               🟡 lokale STT, externe Discord-Library bleibt sensibel
+Dashboard                   🟡 ausbauen
+Tests                       🟡 Basis vorhanden, stark erweitern
+CI                          ✅ vorhanden
+Dokumentation               🟢 deutlich besser
+```
 
-### ⚡ Priorität 2
-7. Ticket-Statistiken
-8. Dashboard erweitern
-9. bessere Permission-Abstraktion
-10. Command-Cooldowns
-11. Datenbank-Migrationen
-12. bessere Startup-Diagnose
+## 📚 Red-DiscordBot als Referenz
 
-### 💡 Priorität 3
-13. Ticket-KI verbessern
-14. Transcript-System
-15. Ticket-Suche
-16. Performance-Monitoring
-17. Feature-Konfiguration pro Server
-18. automatische Health-Reports
+Das offizielle Red-DiscordBot-Projekt ist ein vollständig modularer Self-Hosted-Bot. Es trennt Core, Cogs und Datenverwaltung, unterstützt das Aktivieren/Deaktivieren von Modulen und besitzt ein flexibles Konfigurations-/Permission-Modell. Diese Konzepte sind für die weitere Entwicklung des Projekts interessant.
 
----
+Referenz: `Cog-Creators/Red-DiscordBot`
 
-## 🧪 Empfohlene Testfälle
+## 🚀 Empfohlene nächste Entwicklungsreihenfolge
 
-### Bot startet
-- Token fehlt
-- DB fehlt
-- einzelnes Cog lädt nicht
-- API-Key fehlt
-- Discord-Verbindung schlägt fehl
+### Phase 1 – Stabilität
+1. AutoMod auf gemeinsame Text-Prüfung umstellen
+2. Prefix-/Slash-Commands weiter vereinheitlichen
+3. Birthday/alte Cogs modernisieren
+4. globale Error-/Permission-Abstraktion vervollständigen
 
-### Commands
-- User ohne Rechte
-- User mit Rechten
-- unbekannte Argumente
-- falsche Eingaben
-- Cooldown
+### Phase 2 – Daten
+5. DB-Schicht auf fachliche Services aufteilen
+6. Migrationen versionieren
+7. Moderationszähler persistent machen
+8. Transcript-Metadaten strukturiert speichern
 
-### Tickets
-- Ticket erstellen
-- Ticket schließen
-- Ticket erneut öffnen
-- Ticket ohne Berechtigung öffnen
-- Ticket mit vielen Nachrichten
-- Ticket mit Sonderzeichen
-- Ticket ohne Nachrichten
+### Phase 3 – Music / Voice
+9. Music Session Manager
+10. Lavalink/Wavelink optional als Backend
+11. Voice-Session-Persistenz
+12. Transcript-Suche und Export
 
-### API
-- API antwortet normal
-- API Timeout
-- API 401
-- API Rate Limit
-- API 500
-- leere Antwort
-- zu große Antwort
+### Phase 4 – Dashboard
+13. echte Metrics
+14. Live-Logs
+15. Cog-Status
+16. DB/API Health
+17. Server-Konfiguration im Web
 
----
+### Phase 5 – Qualität
+18. 70–80 % wichtige Core-Logik testen
+19. Integrations-Smoke-Tests für Cogs
+20. Release-/Versionierungsprozess
 
-## 🏆 Zielbild für eine 9/10
+## 🎯 Zielarchitektur
 
 ```text
 Discord
   │
-  ├── Commands
+  ├── Commands / Slash
   ├── Events
-  └── UI
-       │
-       ▼
-  Feature/Cog Layer
-       │
-       ├── Moderation
-       ├── Tickets
-       ├── Community
-       ├── Music
-       └── Dashboard
-       │
-       ▼
-  Core Services
-       │
-       ├── Config
-       ├── Database
-       ├── Logging
-       ├── Permissions
-       ├── API Client
-       └── Metrics
-       │
-       ▼
-  Tests + CI
+  └── UI Views / Modals
+          │
+          ▼
+      Cog Layer
+          │
+          ├── Moderation
+          ├── AutoMod
+          ├── Tickets
+          ├── Community
+          ├── Music
+          ├── Voice
+          ├── Minecraft
+          └── Dashboard
+          │
+          ▼
+      Core Services
+          │
+          ├── Permissions
+          ├── Config
+          ├── Database
+          ├── Logging
+          ├── Metrics
+          ├── Transcript Storage
+          └── API Clients
+          │
+          ▼
+        Tests + CI
 ```
 
-Das wäre deutlich wartbarer als immer neue Funktionen direkt in einzelne Commands einzubauen.
+## Fazit
 
----
+Das Projekt ist jetzt deutlich näher an einem echten modularen All-in-One-Bot. Der größte Gewinn kam nicht durch mehr Commands, sondern durch die Reparatur des Bot-Cores, der Command-Verarbeitung und des Konfigurations-/Permission-Fundaments.
 
-## 🎯 Fazit
-
-Der Bot ist **kein schlechtes Projekt**. Das Grundgerüst ist bereits solide. Der nächste Entwicklungsschritt sollte aber nicht einfach „noch 20 Features“ bedeuten.
-
-Die sinnvollste Reihenfolge ist:
-
-**Stabilität → Tests → Sicherheit → Performance → bessere Tickets → Dashboard → intelligente Funktionen.**
-
-Wenn diese Reihenfolge eingehalten wird, kann aus dem aktuellen Bot ein deutlich robusteres, langfristig wartbares Discord-Bot-Projekt werden.
+Die nächsten großen Verbesserungen sollten jetzt gezielt an **AutoMod, Datenhaltung, Dashboard, Music-Backend und Tests** gehen statt wieder neue Einzel-Cogs ohne gemeinsame Infrastruktur anzuhäufen.
