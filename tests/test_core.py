@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
-
-import discord
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 BOT_DIR = ROOT / "_inner_bot"
@@ -12,19 +11,16 @@ from core.permissions import can_manage_bot, is_staff  # noqa: E402
 
 
 def make_member(*, administrator=False, manage_guild=False, roles=()):
-    member = object.__new__(discord.Member)
-    member._roles = []
-    member._state = None
-    member.guild = None
-    member.user = None
-    member.id = 1
-    member.guild_permissions = type(
-        "PermissionsStub",
-        (),
-        {"administrator": administrator, "manage_guild": manage_guild, "manage_channels": False},
-    )()
-    member.roles = [type("RoleStub", (), {"name": role})() for role in roles]
-    return member
+    perms = SimpleNamespace(
+        administrator=administrator,
+        manage_guild=manage_guild,
+        manage_channels=False,
+    )
+    return SimpleNamespace(
+        id=1,
+        guild_permissions=perms,
+        roles=[SimpleNamespace(name=role) for role in roles],
+    )
 
 
 def test_admin_can_manage_bot():
