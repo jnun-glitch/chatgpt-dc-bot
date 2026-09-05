@@ -8,7 +8,7 @@ if str(BOT_DIR) not in sys.path:
 
 import pytest
 
-from cogs.social import latest_unseen, normalize_account  # noqa: E402
+from cogs.social import latest_unseen, normalize_account, twitch_should_notify, youtube_kind  # noqa: E402
 
 
 def test_normalize_youtube_channel_url():
@@ -87,3 +87,17 @@ def test_latest_unseen_collapses_duplicate_ids():
         {"id": "2", "published": "2026-01-03"},
     ]
     assert [item["id"] for item in latest_unseen(items, None)] == ["1", "2"]
+
+
+def test_twitch_notifies_only_for_new_stream_session():
+    assert twitch_should_notify(None, "123") is True
+    assert twitch_should_notify("offline", "123") is True
+    assert twitch_should_notify("123", "123") is False
+    assert twitch_should_notify("456", "123") is True
+    assert twitch_should_notify("123", "") is False
+
+
+def test_youtube_kind_distinguishes_live_and_video():
+    assert youtube_kind({"is_live_content": True, "is_live_now": True}) == "live"
+    assert youtube_kind({"is_live_content": True, "is_live_now": False}) == "video"
+    assert youtube_kind({"is_live_content": False, "is_live_now": False}) == "video"
