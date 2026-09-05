@@ -33,9 +33,9 @@ def _cog_class(module):
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    original = list(getattr(cog, "__cog_app_commands__", ()))
-    roots = [cmd for cmd in original if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
-    others = [cmd for cmd in original if cmd not in roots]
+    app_commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
+    roots = [cmd for cmd in app_commands_in_cog if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
+    others = [cmd for cmd in app_commands_in_cog if cmd not in roots]
     if len(roots) <= 1:
         await client.add_cog(cog)
         return
@@ -61,8 +61,7 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
     cog = cog_cls(client)
-    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
+    roots = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if getattr(cmd, "parent", None) is None]
     if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
