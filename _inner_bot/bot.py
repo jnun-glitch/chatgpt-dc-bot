@@ -259,43 +259,6 @@ async def cmd_hallo(interaction: discord.Interaction):
     await interaction.response.send_message(f"Hallo {interaction.user.mention}! Wie geht es dir?")
 
 
-@bot.tree.command(name="status", description="Zeigt den Bot-Status")
-async def cmd_status(interaction: discord.Interaction):
-    embed = discord.Embed(title="Bot Status", color=0x5865F2)
-    embed.add_field(name="Status", value="Online")
-    embed.add_field(name="Uptime", value=get_uptime())
-    embed.add_field(name="Server", value=str(len(bot.guilds)))
-    embed.add_field(name="Cogs", value=str(len(loaded_cogs)))
-    embed.add_field(name="Restarts", value=str(restart_count))
-    embed.add_field(name="Latenz", value=f"{round(bot.latency * 1000)}ms" if bot.latency else "N/A")
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="serverinfo", description="Zeigt Informationen über den Server")
-async def cmd_serverinfo(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message("Nur auf einem Server möglich.", ephemeral=True)
-        return
-    log_command("serverinfo", interaction.user)
-    embed = discord.Embed(title=interaction.guild.name, color=0x5865F2)
-    embed.add_field(name="Mitglieder", value=str(interaction.guild.member_count))
-    embed.add_field(name="Erstellt", value=interaction.guild.created_at.strftime("%d.%m.%Y"))
-    embed.add_field(name="Server-ID", value=str(interaction.guild.id))
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="userinfo", description="Zeigt Informationen über einen Nutzer")
-@app_commands.describe(member="Benutzer")
-async def cmd_userinfo(interaction: discord.Interaction, member: discord.Member | None = None):
-    member = member or interaction.user
-    log_command("userinfo", interaction.user)
-    embed = discord.Embed(title=str(member), color=member.color)
-    embed.add_field(name="ID", value=str(member.id))
-    embed.add_field(name="Beigetreten", value=member.joined_at.strftime("%d.%m.%Y") if member.joined_at else "?")
-    embed.add_field(name="Bot?", value="Ja" if member.bot else "Nein")
-    await interaction.response.send_message(embed=embed)
-
-
 async def _run_ai_ticket(message: discord.Message) -> None:
     ticket = get_ticket_by_channel(str(message.channel.id))
     if not ticket:
