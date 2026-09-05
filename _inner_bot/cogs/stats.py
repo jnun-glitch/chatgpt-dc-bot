@@ -137,5 +137,5 @@ class StatsCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(StatsCog(bot))
