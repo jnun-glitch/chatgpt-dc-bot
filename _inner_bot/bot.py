@@ -39,7 +39,6 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
     if len(roots) <= 1:
         await client.add_cog(cog)
         return
-
     primary, secondary = roots[0], roots[1:]
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
     group_name = f"{stem}-cmds"[:32]
@@ -47,7 +46,6 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
         group_name = f"{stem[:27]}-grp"
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         raise RuntimeError(f"Keine freie Command-Gruppe für {module_name}")
-
     group = app_commands.Group(name=group_name, description=f"Weitere {stem} Commands")
     for cmd in secondary:
         group.add_command(cmd)
@@ -60,22 +58,14 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     cog_cls = _cog_class(module)
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
-
-    # The dedicated BackupCog owns /backup now and /backup status. Remove the
-    # old AdminCog root /backup registration before injecting BackupCog.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
-
     cog = cog_cls(client)
     commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
     roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
-
-    # Keep all Cogs loaded by proactively reducing multi-command Cogs to at most
-    # one primary root command plus one grouped root command.
     if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
-
     await _add_grouped_cog(client, cog, module_name)
     return "grouped"
 
