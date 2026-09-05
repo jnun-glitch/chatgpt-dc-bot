@@ -15,6 +15,7 @@ import traceback
 from pathlib import Path
 from threading import Thread
 
+from dotenv import load_dotenv
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -24,8 +25,13 @@ from core.ai_ticket import analyze_ticket
 from core.db import get_ticket_by_channel, init_db, update_ticket_ai
 from core.logging import logger
 
-BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 BOT_DIR = Path(__file__).resolve().parent
+# Load the local bot .env explicitly before reading the token. This avoids relying
+# on sitecustomize and makes `python bot.py` deterministic on Windows and Linux.
+# A local .env should win over a stale process/user-level DISCORD_TOKEN.
+load_dotenv(BOT_DIR / ".env", override=True)
+
+BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 COGS_DIR = BOT_DIR / "cogs"
 START_TIME = time.time()
 loaded_cogs: list[str] = []
@@ -169,6 +175,13 @@ def run_bot() -> None:
     print("\n[START] Starte Discord-Bot...")
     try:
         bot.run(BOT_TOKEN, log_handler=None)
+    except discord.LoginFailure:
+        print(
+            "[FEHLER] Discord hat den Bot-Token abgelehnt (401 Unauthorized).\n"
+            "         Pruefe DISCORD_TOKEN in _inner_bot/.env.\n"
+            "         Falls der Token stimmt, erzeuge im Discord Developer Portal einen neuen Bot-Token."
+        )
+        raise
     except KeyboardInterrupt:
         print("\n[STOP] Manuell gestoppt.")
     except Exception:
