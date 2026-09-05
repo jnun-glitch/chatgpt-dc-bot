@@ -8,7 +8,16 @@ if str(BOT_DIR) not in sys.path:
 
 import pytest
 
-from cogs.social import latest_unseen, normalize_account, twitch_should_notify, youtube_kind  # noqa: E402
+from cogs.social import (
+    latest_unseen,
+    make_twitch_embed,
+    make_youtube_embed,
+    normalize_account,
+    twitch_should_notify,
+    youtube_initial_marker,
+    youtube_kind,
+    youtube_thumbnail,
+)
 
 
 def test_normalize_youtube_channel_url():
@@ -101,3 +110,54 @@ def test_youtube_kind_distinguishes_live_and_video():
     assert youtube_kind({"is_live_content": True, "is_live_now": True}) == "live"
     assert youtube_kind({"is_live_content": True, "is_live_now": False}) == "video"
     assert youtube_kind({"is_live_content": False, "is_live_now": False}) == "video"
+
+
+def test_youtube_initial_marker_picks_newest():
+    items = [
+        {"id": "old", "published": "2026-01-01"},
+        {"id": "new", "published": "2026-01-03"},
+        {"id": "mid", "published": "2026-01-02"},
+    ]
+    assert youtube_initial_marker(items) == "new"
+
+
+def test_youtube_initial_marker_empty_feed():
+    assert youtube_initial_marker([]) is None
+
+
+def test_youtube_thumbnail_uses_video_id():
+    assert youtube_thumbnail("abc123") == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
+
+
+def test_youtube_video_embed_has_thumbnail_and_link():
+    embed = make_youtube_embed({
+        "id": "abc123",
+        "title": "Testvideo",
+        "url": "https://youtu.be/abc123",
+        "creator": "Creator",
+    })
+    assert embed.title == "📺 Neues YouTube-Video"
+    assert embed.url == "https://youtu.be/abc123"
+    assert embed.image.url.endswith("/abc123/hqdefault.jpg")
+
+
+def test_youtube_live_embed_has_live_title():
+    embed = make_youtube_embed({
+        "id": "abc123",
+        "title": "Livestream",
+        "url": "https://youtu.be/abc123",
+        "creator": "Creator",
+    }, kind="live")
+    assert embed.title == "🔴 YouTube ist LIVE!"
+
+
+def test_twitch_embed_contains_stream_details():
+    embed = make_twitch_embed({
+        "title": "Minecraft",
+        "game_name": "Minecraft",
+        "viewer_count": 42,
+        "user_name": "Streamer",
+    }, "streamer")
+    assert embed.title == "🔴 Twitch ist LIVE!"
+    assert "Minecraft" in embed.description
+    assert embed.url == "https://twitch.tv/streamer"
