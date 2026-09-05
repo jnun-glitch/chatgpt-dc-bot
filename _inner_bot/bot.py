@@ -33,7 +33,7 @@ def _cog_class(module):
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    """Keep one root command and group the remaining commands of the Cog."""
+    """Keep one primary root command and group the remaining root commands."""
     original = list(getattr(cog, "__cog_app_commands__", ()))
     roots = [cmd for cmd in original if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
     others = [cmd for cmd in original if cmd not in roots]
@@ -72,9 +72,6 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
     roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
 
-    # Proactively compress every multi-command Cog. This avoids ever reaching
-    # Discord's 100 global root-command ceiling while keeping the primary command
-    # of each Cog at its original name.
     if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
