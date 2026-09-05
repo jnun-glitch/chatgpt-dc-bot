@@ -21,15 +21,12 @@ from discord import app_commands
 from discord.ext import commands
 from flask import Flask
 
+BOT_DIR = Path(__file__).resolve().parent
+load_dotenv(BOT_DIR / ".env", override=True)
+
 from core.ai_ticket import analyze_ticket
 from core.db import get_ticket_by_channel, init_db, update_ticket_ai
 from core.logging import logger
-
-BOT_DIR = Path(__file__).resolve().parent
-# Load the local bot .env explicitly before reading the token. This avoids relying
-# on sitecustomize and makes `python bot.py` deterministic on Windows and Linux.
-# A local .env should win over a stale process/user-level DISCORD_TOKEN.
-load_dotenv(BOT_DIR / ".env", override=True)
 
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 COGS_DIR = BOT_DIR / "cogs"
@@ -150,20 +147,31 @@ def route_health():
     })
 
 
+def _read_int_env(name: str, default: int, minimum: int | None = None) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning("Env-Variable %s=%s ist kleiner als %s – Default %s verwendet.", name, value, minimum, default)
+        return default
+    return value
+
+
 def run_web() -> None:
-    port = int(os.environ.get("PORT", "8080") or "8080")
+    port = _read_int_env("PORT", 8080, minimum=1)
+    if port > 65535:
+        logger.warning("PORT=%s liegt außerhalb des gültigen Bereichs – Default 8080 verwendet.", port)
+        port = 8080
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 def run_bot() -> None:
-    """Start the Discord client exactly once.
-
-    discord.py owns the event loop and HTTP session. Reusing the same Bot object
-    after bot.run() has failed can leave its aiohttp session closed, which causes
-    misleading follow-up errors such as ``RuntimeError: Session is closed``.
-    Discord.py already handles normal gateway reconnects itself, so a process-level
-    retry loop here is both unnecessary and unsafe.
-    """
+    """Start the Discord client exactly once."""
     global restart_count
     restart_count = 1
 
@@ -178,7 +186,7 @@ def run_bot() -> None:
     except discord.LoginFailure:
         print(
             "[FEHLER] Discord hat den Bot-Token abgelehnt (401 Unauthorized).\n"
-            "         Pruefe DISCORD_TOKEN in _inner_bot/.env.\n"
+            "         Prüfe DISCORD_TOKEN in _inner_bot/.env.\n"
             "         Falls der Token stimmt, erzeuge im Discord Developer Portal einen neuen Bot-Token."
         )
         raise
