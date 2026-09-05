@@ -33,7 +33,7 @@ def _cog_class(module):
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    """Keep one primary root command and group the remaining root commands."""
+    """Keep one root command and group the remaining commands of the Cog."""
     original = list(getattr(cog, "__cog_app_commands__", ()))
     roots = [cmd for cmd in original if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
     others = [cmd for cmd in original if cmd not in roots]
@@ -41,15 +41,10 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
         await client.add_cog(cog)
         return
 
-    # Preserve the first/primary command at the root and move the rest below a
-    # per-Cog group. This keeps familiar primary commands while cutting many
-    # root registrations from the global 100-command budget.
     primary = roots[0]
     secondary = roots[1:]
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
-    group_name = f"{stem}-cmds"
-    if len(group_name) > 32:
-        group_name = group_name[:32]
+    group_name = f"{stem}-cmds"[:32]
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         group_name = f"{stem[:27]}-grp"
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
@@ -68,16 +63,19 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
 
-    # The dedicated BackupCog owns /backup now and /backup status. Remove the
-    # legacy root command from AdminCog before injecting the dedicated Cog.
+    # Dedicated BackupCog provides /backup now and /backup status. Remove the
+    # legacy AdminCog /backup root registration before loading BackupCog.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
 
     cog = cog_cls(client)
-    app_commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    root_commands = [cmd for cmd in app_commands_in_cog if getattr(cmd, "parent", None) is None]
+    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
+    roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
 
-    if len(root_commands) <= 1:
+    # Proactively compress every multi-command Cog. This avoids ever reaching
+    # Discord's 100 global root-command ceiling while keeping the primary command
+    # of each Cog at its original name.
+    if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
 
