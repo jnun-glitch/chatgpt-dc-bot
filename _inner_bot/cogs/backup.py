@@ -5,7 +5,6 @@ import asyncio
 import os
 from pathlib import Path
 
-import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -68,7 +67,7 @@ class BackupCog(commands.Cog):
             logger.exception("Startup-Backup fehlgeschlagen", exc_info=exc)
 
     @backup.command(name="now", description="Erstellt sofort ein Backup")
-    async def backup_now(self, interaction: discord.Interaction):
+    async def backup_now(self, interaction):
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("❌ Nur der Bot-Owner darf Backups auslösen.", ephemeral=True)
             return
@@ -82,7 +81,7 @@ class BackupCog(commands.Cog):
         await interaction.followup.send(f"✅ Backup erstellt: `{path.name}`\nAufbewahrung: {BACKUP_RETENTION} Backups.", ephemeral=True)
 
     @backup.command(name="status", description="Zeigt den Backup-Status")
-    async def backup_status(self, interaction: discord.Interaction):
+    async def backup_status(self, interaction):
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("❌ Nur der Bot-Owner darf den Backup-Status sehen.", ephemeral=True)
             return
@@ -96,5 +95,5 @@ class BackupCog(commands.Cog):
         )
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(BackupCog(bot))
