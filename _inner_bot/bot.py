@@ -40,6 +40,8 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
         await client.add_cog(cog)
         return
 
+    # Keep the first command at its original root name. Group the rest so every
+    # Cog contributes at most two root registrations, avoiding Discord's 100 root limit.
     primary = roots[0]
     secondary = roots[1:]
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
@@ -62,6 +64,8 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
 
+    # Dedicated BackupCog provides /backup now and /backup status. Remove the
+    # legacy AdminCog root /backup registration before loading BackupCog.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
 
