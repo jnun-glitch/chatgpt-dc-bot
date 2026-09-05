@@ -5,8 +5,6 @@ import asyncio
 import os
 from pathlib import Path
 
-import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 
 from core.backup import create_backup, prune_backups
@@ -21,7 +19,12 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     try:
         return max(minimum, int(raw))
     except ValueError:
-        logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
+        logger.warning(
+            "Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.",
+            name,
+            raw,
+            default,
+        )
         return default
 
 
@@ -31,7 +34,11 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(DATA_DIR / "backups"))).resol
 
 
 class BackupCog(commands.Cog):
-    backup = app_commands.Group(name="backup", description="Bot-Backups verwalten")
+    """Nur der automatische Backup-Dienst.
+
+    Der manuelle Slash-Command /backup gehört bereits zum Admin-Cog.
+    Ein zweiter /backup-Befehl würde mit Discords CommandTree kollidieren.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -72,37 +79,6 @@ class BackupCog(commands.Cog):
         except Exception as exc:
             self.last_error = str(exc)
             logger.exception("Startup-Backup fehlgeschlagen", exc_info=exc)
-
-    @backup.command(name="now", description="Erstellt sofort ein Backup")
-    async def backup_now(self, interaction: discord.Interaction):
-        if not await self.bot.is_owner(interaction.user):
-            await interaction.response.send_message("❌ Nur der Bot-Owner darf Backups auslösen.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        try:
-            path = await self._make_backup()
-        except Exception as exc:
-            logger.exception("Manuelles Backup fehlgeschlagen", exc_info=exc)
-            await interaction.followup.send(f"❌ Backup fehlgeschlagen: `{str(exc)[:300]}`", ephemeral=True)
-            return
-        await interaction.followup.send(
-            f"✅ Backup erstellt: `{path.name}`\nAufbewahrung: {BACKUP_RETENTION} Backups.",
-            ephemeral=True,
-        )
-
-    @backup.command(name="status", description="Zeigt den Backup-Status")
-    async def backup_status(self, interaction: discord.Interaction):
-        if not await self.bot.is_owner(interaction.user):
-            await interaction.response.send_message("❌ Nur der Bot-Owner darf den Backup-Status sehen.", ephemeral=True)
-            return
-        files = sorted(BACKUP_DIR.glob("scratchai_backup_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True) if BACKUP_DIR.exists() else []
-        latest = files[0].name if files else "Noch kein Backup"
-        error = self.last_error or "Keiner"
-        await interaction.response.send_message(
-            f"**Backup-Status**\nIntervall: `{BACKUP_INTERVAL_SECONDS // 60} Min.`\n"
-            f"Vorhandene Backups: `{len(files)}`\nLetztes Backup: `{latest}`\nFehler: `{error[:500]}`",
-            ephemeral=True,
-        )
 
 
 async def setup(bot: commands.Bot):
