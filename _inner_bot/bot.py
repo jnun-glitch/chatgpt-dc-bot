@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import threading
-from pathlib import Path
+from types import MethodType
 
 import discord
 from discord import app_commands
@@ -29,30 +29,26 @@ class ScratchAIBot(commands.Bot):
         await sync_commands_safely(self)
 
 
-async def _load_cog_instance(client: ScratchAIBot, module_name: str):
-    module = importlib.reload(importlib.import_module(module_name))
-    cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
-    if cog_cls is None:
-        raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
-    return cog_cls(client)
+def _cog_class(module):
+    return next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    root_commands = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
-    other_commands = [cmd for cmd in commands_in_cog if cmd not in root_commands]
+    original = list(getattr(cog, "__cog_app_commands__", ()))
+    root_commands = [cmd for cmd in original if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
+    other_commands = [cmd for cmd in original if cmd not in root_commands]
     if not root_commands:
         await client.add_cog(cog)
         return
 
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")[:32]
-    name = stem
-    if client.tree.get_command(name, type=discord.AppCommandType.chat_input):
-        name = f"{stem[:27]}-cmd"
-    if client.tree.get_command(name, type=discord.AppCommandType.chat_input):
+    group_name = stem
+    if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
+        group_name = f"{stem[:27]}-cmd"
+    if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         raise RuntimeError(f"Keine freie Command-Gruppe für {module_name}")
 
-    group = app_commands.Group(name=name, description=f"{stem} Commands")
+    group = app_commands.Group(name=group_name, description=f"{stem} Commands")
     for cmd in root_commands:
         group.add_command(cmd)
     cog.__cog_app_commands__ = tuple(other_commands) + (group,)
@@ -61,29 +57,29 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
 
 async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     module = importlib.reload(importlib.import_module(module_name))
+    cog_cls = _cog_class(module)
+    if cog_cls is None:
+        raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
 
-    try:
-        # Build the Cog ourselves so we can inspect its commands before injection.
-        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
-        if cog_cls is None:
-            raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
-        cog = cog_cls(client)
-        roots = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if getattr(cmd, "parent", None) is None]
+    # Remove the older admin /backup registration in favor of BackupCog's richer
+    # /backup now and /backup status group. The AdminCog method still exists as
+    # normal Python code; only its slash registration is removed.
+    if module_name == "cogs.backup":
+        client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
 
-        # Fix the legacy /backup collision before injecting BackupCog.
-        if module_name == "cogs.backup" and client.tree.get_command("backup", type=discord.AppCommandType.chat_input):
-            client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
+    cog = cog_cls(client)
+    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
+    root_commands = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
+    current_roots = len(client.tree.get_commands())
 
-        current_roots = len(client.tree.get_commands())
-        needed = len(roots)
-        if current_roots + needed <= 100:
-            await client.add_cog(cog)
-            return "normal"
+    if current_roots + len(root_commands) <= 100:
+        await client.add_cog(cog)
+        return "normal"
 
-        await _add_grouped_cog(client, cog, module_name)
-        return "grouped"
-    except Exception:
-        raise
+    # Discord permits 100 global chat-input root commands. Compress only the
+    # Cog that would cross the limit; its listeners/tasks remain fully active.
+    await _add_grouped_cog(client, cog, module_name)
+    return "grouped"
 
 
 async def load_all_cogs(client: ScratchAIBot) -> None:
