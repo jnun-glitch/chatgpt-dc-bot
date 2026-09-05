@@ -1,6 +1,6 @@
 # 🔎 Bot-Gesamtanalyse – aktueller Stand
 
-Stand: 2026-09-04
+Stand: 2026-09-05
 
 ## Bewertung
 
@@ -104,69 +104,104 @@ Der Health-Endpunkt ist vorhanden, aber das Dashboard sollte noch echte Module a
 ### 7. Permission-System
 `core/permissions.py` ist der Anfang. Das Ziel sollte ein serverkonfigurierbares Regelwerk wie bei Red-DiscordBot sein: global, pro Server, pro Rolle, pro User und pro Channel. Red ist explizit modular aufgebaut und erlaubt das Aktivieren/Deaktivieren von Cogs sowie umfangreiche Konfiguration und Community-Cogs. Die Architektur ist deshalb eine gute Referenz, aber kein Code soll kopiert werden.
 
-## 🔴 Wichtigste technische Schulden
+## 🆕 Analyse 2026-09-05: Discord-Best-Practices
 
-```text
-Core-Bot                    ✅ deutlich verbessert
-Cog-Discovery               ✅ verbessert
-Slash Sync                  ✅ verbessert
-Prefix Commands             ✅ repariert
-Permission Layer            🟡 Basis vorhanden
-AutoMod                     🟡 vereinheitlichen
-SQLite/Data Layer            🟡 weiter aufteilen
-Music                        🟡 funktional, später Lavalink
-Voice Receive               🟡 lokale STT, externe Discord-Library bleibt sensibel
-Dashboard                   🟡 ausbauen
-Tests                       🟡 Basis vorhanden, stark erweitern
-CI                          ✅ vorhanden
-Dokumentation               🟢 deutlich besser
-```
+Discord dokumentiert weiterhin Slash Commands, Kontextaktionen und granulare Command Permissions als bevorzugte Interaktionswege. Commands können serverseitig pro Rolle, Mitglied und Channel eingeschränkt werden. citeturn0search4turn0search6
 
-## 📚 Red-DiscordBot als Referenz
+Discord hat außerdem 2026 die Anforderungen rund um privilegierte Datenzugriffe verschärft. `MESSAGE_CONTENT`, `GUILD_MEMBERS` und `GUILD_PRESENCES` sind privilegierte Intents; insbesondere Message Content sollte nur dort verwendet werden, wo die Funktion ihn wirklich benötigt. citeturn0search2turn1search0
 
-Das offizielle Red-DiscordBot-Projekt ist ein vollständig modularer Self-Hosted-Bot. Es trennt Core, Cogs und Datenverwaltung, unterstützt das Aktivieren/Deaktivieren von Modulen und besitzt ein flexibles Konfigurations-/Permission-Modell. Diese Konzepte sind für die weitere Entwicklung des Projekts interessant.
+### Daraus abgeleitete Prioritäten
+1. Prefix-Command-Abhängigkeiten weiter reduzieren, insbesondere `!ai` als Message-Content-Hook.
+2. Wo möglich Slash-/Context-Commands verwenden, damit der Bot weniger auf Message Content angewiesen ist.
+3. Bot-Permissions zusätzlich mit `bot_has_permissions()` bzw. Runtime-Prüfungen absichern.
+4. Für teure KI-/Voice-Operationen Cooldowns und maximale Parallelität einsetzen.
+5. Nur benötigte Gateway-Intents aktivieren, statt dauerhaft `Intents.all()` zu verlangen, sobald die einzelnen Cogs entsprechend umgebaut sind.
 
-Referenz: `Cog-Creators/Red-DiscordBot`
+Discord.py unterstützt für Application Commands eigene Cooldowns; außerdem gibt es `max_concurrency`, was besonders für teure oder exklusiv laufende Operationen sinnvoll ist. citeturn1search3turn1search1
 
-## 🚀 Empfohlene nächste Entwicklungsreihenfolge
+## 💡 Ausgewählte sinnvolle neue Ideen
 
-### Phase 1 – Stabilität
-1. AutoMod auf gemeinsame Text-Prüfung umstellen
-2. Prefix-/Slash-Commands weiter vereinheitlichen
-3. Birthday/alte Cogs modernisieren
-4. globale Error-/Permission-Abstraktion vervollständigen
+Nicht ausgewählt wurden reine Fun-Features, weil das Projekt bereits viele Community-/Fun-Cogs besitzt. Sinnvoller sind Verbesserungen, die mehrere bestehende Systeme stabiler machen:
 
-### Phase 2 – Daten
-5. DB-Schicht auf fachliche Services aufteilen
-6. Migrationen versionieren
-7. Moderationszähler persistent machen
-8. Transcript-Metadaten strukturiert speichern
+### A. `/ai` als echter Slash-Command
+- ersetzt den speziellen `!ai`-Message-Hook
+- behält Ticket-Berechtigungsprüfung
+- kann mit Cooldown versehen werden
+- reduziert langfristig die Abhängigkeit von `MESSAGE_CONTENT`
 
-### Phase 3 – Music / Voice
-9. Music Session Manager
-10. Lavalink/Wavelink optional als Backend
-11. Voice-Session-Persistenz
-12. Transcript-Suche und Export
+### B. Bot-Diagnostics
+Neuer kleiner Admin-/Owner-Diagnosebereich:
+- DB erreichbar?
+- welche Cogs geladen?
+- welche externen APIs konfiguriert?
+- letzte Fehler
+- Gateway-Latenz
+- Voice-/Music-Sessions
+- Anzahl aktiver Tickets
 
-### Phase 4 – Dashboard
-13. echte Metrics
-14. Live-Logs
-15. Cog-Status
-16. DB/API Health
-17. Server-Konfiguration im Web
+Das passt direkt zur bestehenden `/status`- und `/health`-Architektur, statt ein separates Monitoring-System einzuführen.
 
-### Phase 5 – Qualität
-18. 70–80 % wichtige Core-Logik testen
-19. Integrations-Smoke-Tests für Cogs
-20. Release-/Versionierungsprozess
+### C. Persistente AutoMod-Strikes
+Warn-/Strike-Zustände in SQLite speichern und mit Ablaufzeit versehen. Damit überlebt die Eskalationslogik Neustarts und kann sauber getestet werden.
+
+### D. Gemeinsame Permission-/Error-Schicht
+Cogs sollten möglichst dieselben Permission-Helfer und dieselbe Fehlerausgabe verwenden. Discord bietet bereits granulare Command Permissions; die eigene Runtime-Schicht bleibt trotzdem nötig für kritische Aktionen. citeturn0search6
+
+### E. Test-Härtung
+Nicht blind 100 neue Tests schreiben, sondern zuerst die fehleranfälligen Kernpfade testen:
+- AutoMod-Normalisierung
+- Permission-Entscheidungen
+- Transcript-Escaping
+- Social-Alert-Deduplizierung
+- Music-Queue-State
+- DB-Migrationen
+
+## 🐞 Gefundene Bugs / technische Risiken
+
+### Hoch
+- `bot.py` verwendet aktuell `BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()` und lädt `.env` nicht selbst. Obwohl `python-dotenv` installiert ist, ist ein lokaler Start dadurch davon abhängig, dass die Umgebung den Wert bereits gesetzt hat. Das sollte in einem kleinen, gezielten Core-Fix behoben werden.
+- `bot.py` setzt `discord.Intents.all()`. Das ist funktional bequem, fordert aber mehr privilegierte Zugriffe als viele Features tatsächlich benötigen. Der Intent-Bedarf sollte pro Cog inventarisiert und anschließend minimiert werden. citeturn1search0
+
+### Mittel
+- `!ai` hängt an `on_message()` und Message Content. Ein Slash-Command wäre langfristig robuster und näher an Discords aktuellem App-Modell. citeturn0search2turn0search6
+- KI-Ticketanalyse hat keinen sichtbaren Application-Command-Cooldown bzw. keine `max_concurrency`-Sperre im Entry-Point. Bei mehreren parallelen Analysen können unnötig viele teure Operationen gestartet werden. Discord.py bietet dafür passende Mechanismen. citeturn1search3
+- `list_` im Social-Cog muss zwar die 2000-Zeichen-Grenze berücksichtigen, nutzt aber mehrere Follow-ups; das ist grundsätzlich okay, sollte jedoch als wiederverwendbarer Pagination-Helper vereinheitlicht werden.
+
+### Niedrig
+- Der Health-Endpunkt zeigt bereits wichtige Runtime-Daten, aber keine DB/API-Checks.
+- `restart_count` ist ein Prozesswert und deshalb keine echte Restart-Historie.
+
+## 🚀 Nächster Entwicklungsplan
+
+### Schritt 1 – Stabilität zuerst
+1. `.env`-Laden im Entry-Point sauber machen.
+2. `/ai` als Slash-Command hinzufügen und `!ai` danach nur noch als Übergang behandeln.
+3. Cooldown + `max_concurrency` für AI-Analyse.
+4. Bot-Permissions für kritische Commands explizit prüfen.
+5. AutoMod auf gemeinsame `core/badwords.py`-API umstellen.
+
+### Schritt 2 – Persistenz
+6. AutoMod-Strikes persistent machen.
+7. DB-Service-Schicht schrittweise aus `core/db.py` herauslösen.
+8. Versionierte Migrationen ergänzen.
+
+### Schritt 3 – Observability
+9. `/diagnostics`/erweitertes `/status`.
+10. DB/API/Voice/Music-Health.
+11. strukturierte Fehler-/Command-Metriken.
+
+### Schritt 4 – Modernisierung
+12. Birthday-Cog auf Slash Commands + timezone-aware Datumslogik umstellen.
+13. weitere alte Prefix-Commands abbauen.
+14. benötigte Intents minimieren.
 
 ## 🎯 Zielarchitektur
 
 ```text
 Discord
   │
-  ├── Commands / Slash
-  ├── Events
+  ├── Slash / Context Commands
+  ├── Events (nur notwendige Intents)
   └── UI Views / Modals
           │
           ▼
@@ -198,6 +233,4 @@ Discord
 
 ## Fazit
 
-Das Projekt ist jetzt deutlich näher an einem echten modularen All-in-One-Bot. Der größte Gewinn kam nicht durch mehr Commands, sondern durch die Reparatur des Bot-Cores, der Command-Verarbeitung und des Konfigurations-/Permission-Fundaments.
-
-Die nächsten großen Verbesserungen sollten jetzt gezielt an **AutoMod, Datenhaltung, Dashboard, Music-Backend und Tests** gehen statt wieder neue Einzel-Cogs ohne gemeinsame Infrastruktur anzuhäufen.
+Ich würde **jetzt nicht noch einen großen neuen Feature-Cog bauen**. Der sinnvollste nächste Schritt ist ein kleiner Stabilitäts-Sprint: `.env`-Startpfad, `/ai`-Modernisierung, AI-Concurrency/Cooldown, Permission-Härtung und AutoMod-API-Vereinheitlichung. Danach lohnt sich erst die nächste größere Feature-Runde.
