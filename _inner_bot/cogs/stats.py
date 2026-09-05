@@ -22,7 +22,7 @@ _START_TIME = _time.time()
 
 
 class StatsCog(commands.Cog):
-    """Statistiken, System-Info und Leveling. Slash-Commands als Gruppe."""
+    """Statistiken, System-Info und Leveling."""
     stats = app_commands.Group(name="stats", description="Statistiken und System-Informationen")
 
     def __init__(self, bot: commands.Bot):
