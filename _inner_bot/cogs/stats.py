@@ -91,7 +91,7 @@ class StatsCog(commands.Cog):
         cpu = psutil.cpu_percent(interval=0.3)
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage(str(BOT_DIR))
-        proc_mem = __import__("psutil").Process().memory_info().rss / 1024 / 1024
+        proc_mem = psutil.Process().memory_info().rss / 1024 / 1024
         embed = discord.Embed(title="🖥️ System", color=discord.Color.green())
         embed.add_field(name="CPU", value=f"{cpu}%", inline=True)
         embed.add_field(name="RAM", value=f"{mem.used / (1024**3):.1f} GB / {mem.total / (1024**3):.1f} GB ({mem.percent}%)", inline=True)
