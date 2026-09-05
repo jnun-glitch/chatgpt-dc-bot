@@ -1,6 +1,6 @@
 """ScratchAI Discord bot entrypoint.
 
-Keeps only lifecycle/bootstrap functionality here. Feature commands live in
+Keeps lifecycle/bootstrap functionality here. Feature commands live in
 Cogs so Slash-Commands are registered exactly once.
 """
 from __future__ import annotations
@@ -35,6 +35,11 @@ command_log: list[dict] = []
 MAX_LOG_ENTRIES = 100
 restart_count = 0
 
+# Discord allows at most 100 global top-level application commands.
+# Keep some headroom so a future Cog does not immediately break startup.
+MAX_GLOBAL_ROOT_COMMANDS = 90
+MAX_GROUP_SUBCOMMANDS = 25
+
 app = Flask("bot")
 
 
@@ -50,6 +55,9 @@ class ScratchAIBot(commands.Bot):
     async def setup_hook(self) -> None:
         init_db()
         await load_all_cogs(self)
+        _compact_global_commands(self)
+        root_count = len(self.tree.get_commands())
+        print(f"[COMMANDS] {root_count}/100 globale Top-Level-Slash-Commands")
         try:
             synced = await self.tree.sync()
             print(f"[SYNC] {len(synced)} globale Slash-Commands synchronisiert")
@@ -75,6 +83,93 @@ def log_command(name: str, user, status: str = "ok") -> None:
         "status": status,
     })
     del command_log[:-MAX_LOG_ENTRIES]
+
+
+def _compact_global_commands(client: commands.Bot) -> None:
+    """Group overflow commands so Discord's 100-root-command limit is safe.
+
+    Commands that belong to the same Cog are grouped only when necessary.
+    One primary command per affected Cog stays at the root to minimize breaking
+    changes. Up to 25 commands are placed in each generated command group.
+    Existing app-command groups are left untouched.
+    """
+    tree = client.tree
+    root_commands = tree.get_commands()
+    if len(root_commands) <= MAX_GLOBAL_ROOT_COMMANDS:
+        return
+
+    by_cog: dict[str, list[app_commands.Command]] = {}
+    for command in root_commands:
+        if not isinstance(command, app_commands.Command):
+            continue
+        if command.parent is not None:
+            continue
+        binding = getattr(command, "binding", None)
+        if binding is None:
+            continue
+        module = getattr(binding.__class__, "__module__", "")
+        cog_name = module.rsplit(".", 1)[-1] or binding.__class__.__name__.casefold()
+        by_cog.setdefault(cog_name, []).append(command)
+
+    candidates = sorted(by_cog.items(), key=lambda item: (-len(item[1]), item[0]))
+    grouped = 0
+
+    for cog_name, commands_for_cog in candidates:
+        if len(tree.get_commands()) <= MAX_GLOBAL_ROOT_COMMANDS:
+            break
+        if len(commands_for_cog) < 2:
+            continue
+
+        commands_for_cog.sort(key=lambda command: command.name)
+        primary = next(
+            (command for command in commands_for_cog if command.name == cog_name),
+            commands_for_cog[0],
+        )
+        movable = [command for command in commands_for_cog if command is not primary]
+
+        for chunk_start in range(0, len(movable), MAX_GROUP_SUBCOMMANDS):
+            if len(tree.get_commands()) <= MAX_GLOBAL_ROOT_COMMANDS:
+                break
+
+            chunk = movable[chunk_start:chunk_start + MAX_GROUP_SUBCOMMANDS]
+            if not chunk:
+                continue
+
+            group_index = chunk_start // MAX_GROUP_SUBCOMMANDS + 1
+            base_name = f"{cog_name}-cmds"
+            group_name = base_name if group_index == 1 else f"{base_name}-{group_index}"
+            group_name = group_name[:32]
+
+            # Avoid collisions with existing root commands/groups.
+            existing_names = {command.name for command in tree.get_commands()}
+            suffix = 2
+            unique_name = group_name
+            while unique_name in existing_names:
+                suffix_text = f"-{suffix}"
+                unique_name = f"{group_name[:32 - len(suffix_text)]}{suffix_text}"
+                suffix += 1
+
+            group = app_commands.Group(
+                name=unique_name,
+                description=f"Weitere {cog_name}-Befehle",
+            )
+            for command in chunk:
+                tree.remove_command(command.name)
+                group.add_command(command)
+
+            tree.add_command(group)
+            grouped += len(chunk)
+            print(f"[GROUP] /{unique_name}: {len(chunk)} Befehle aus {cog_name}.py")
+
+    remaining = len(tree.get_commands())
+    if remaining > 100:
+        logger.error(
+            "Zu viele globale Top-Level-Slash-Commands: %s. "
+            "Mehr Cogs müssen in Command-Gruppen aufgeteilt werden.",
+            remaining,
+        )
+    elif grouped:
+        print(f"[GROUP] {grouped} Overflow-Befehle gruppiert -> {remaining} Root-Commands")
 
 
 async def load_all_cogs(client: commands.Bot) -> None:
@@ -135,6 +230,7 @@ def route_health():
         "guilds": len(bot.guilds) if ready else 0,
         "cogs": loaded_cogs,
         "cogs_loaded": len(loaded_cogs),
+        "commands_root": len(bot.tree.get_commands()),
         "restarts": restart_count,
         "latency_ms": round(bot.latency * 1000) if bot.latency else None,
     })
