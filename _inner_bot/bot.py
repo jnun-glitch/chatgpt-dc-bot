@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import os
 import threading
-from types import MethodType
 
 import discord
 from discord import app_commands
@@ -61,9 +60,8 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
 
-    # Remove the older admin /backup registration in favor of BackupCog's richer
-    # /backup now and /backup status group. The AdminCog method still exists as
-    # normal Python code; only its slash registration is removed.
+    # Prefer the dedicated BackupCog group /backup now|status over the legacy
+    # root /backup command in AdminCog.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
 
@@ -76,8 +74,6 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
         await client.add_cog(cog)
         return "normal"
 
-    # Discord permits 100 global chat-input root commands. Compress only the
-    # Cog that would cross the limit; its listeners/tasks remain fully active.
     await _add_grouped_cog(client, cog, module_name)
     return "grouped"
 
@@ -93,7 +89,8 @@ async def load_all_cogs(client: ScratchAIBot) -> None:
             mode = await _load_cog_adaptive(client, f"cogs.{name}")
             total += 1
             grouped += mode == "grouped"
-            print(f"  [OK] {name}" + (" (Commands gruppiert)" if mode == "grouped" else ""))
+            suffix = " (Commands gruppiert)" if mode == "grouped" else ""
+            print(f"  [OK] {name}{suffix}")
         except Exception:
             failed += 1
             logger.exception("Cog konnte nicht geladen werden: %s", name)
@@ -106,6 +103,7 @@ async def sync_commands_safely(client: ScratchAIBot) -> None:
     print(f"[SYNC] {len(roots)} globale Slash-Commands vorbereitet")
     if len(roots) > 100:
         logger.error("Mehr als 100 globale Slash-Commands erkannt (%s).", len(roots))
+        print("[SYNC] FEHLER: Mehr als 100 globale Slash-Commands")
         return
     try:
         synced = await client.tree.sync()
