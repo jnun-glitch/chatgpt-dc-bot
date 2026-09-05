@@ -33,12 +33,13 @@ def _cog_class(module):
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    app_commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    roots = [cmd for cmd in app_commands_in_cog if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
-    others = [cmd for cmd in app_commands_in_cog if cmd not in roots]
+    original = list(getattr(cog, "__cog_app_commands__", ()))
+    roots = [cmd for cmd in original if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
+    others = [cmd for cmd in original if cmd not in roots]
     if len(roots) <= 1:
         await client.add_cog(cog)
         return
+
     primary, secondary = roots[0], roots[1:]
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
     group_name = f"{stem}-cmds"[:32]
@@ -46,6 +47,7 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
         group_name = f"{stem[:27]}-grp"
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         raise RuntimeError(f"Keine freie Command-Gruppe für {module_name}")
+
     group = app_commands.Group(name=group_name, description=f"Weitere {stem} Commands")
     for cmd in secondary:
         group.add_command(cmd)
