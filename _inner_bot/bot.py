@@ -29,13 +29,17 @@ class ScratchAIBot(commands.Bot):
         await sync_commands_safely(self)
 
 
+async def _load_cog_instance(client: ScratchAIBot, module_name: str):
+    module = importlib.reload(importlib.import_module(module_name))
+    cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
+    if cog_cls is None:
+        raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
+    return cog_cls(client)
+
+
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    """Register root slash commands from one Cog under one group."""
     commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    root_commands = [
-        cmd for cmd in commands_in_cog
-        if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)
-    ]
+    root_commands = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)]
     other_commands = [cmd for cmd in commands_in_cog if cmd not in root_commands]
     if not root_commands:
         await client.add_cog(cog)
@@ -55,37 +59,31 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
     await client.add_cog(cog)
 
 
-async def _load_cog_with_adaptive_commands(client: ScratchAIBot, module_name: str) -> str:
-    module = importlib.import_module(module_name)
-    setup = getattr(module, "setup", None)
-    if setup is None:
-        raise RuntimeError(f"{module_name} hat keine setup()-Funktion")
+async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
+    module = importlib.reload(importlib.import_module(module_name))
 
     try:
-        await client.load_extension(module_name)
-        return "normal"
-    except discord.app_commands.errors.CommandAlreadyRegistered:
-        if module_name == "cogs.backup":
-            # AdminCog historically contains a legacy root /backup command.
-            # Remove that legacy registration and load the dedicated BackupCog.
+        # Build the Cog ourselves so we can inspect its commands before injection.
+        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
+        if cog_cls is None:
+            raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
+        cog = cog_cls(client)
+        roots = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if getattr(cmd, "parent", None) is None]
+
+        # Fix the legacy /backup collision before injecting BackupCog.
+        if module_name == "cogs.backup" and client.tree.get_command("backup", type=discord.AppCommandType.chat_input):
             client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
-            module = importlib.reload(module)
-            setup = getattr(module, "setup")
-            await setup(client)
+
+        current_roots = len(client.tree.get_commands())
+        needed = len(roots)
+        if current_roots + needed <= 100:
+            await client.add_cog(cog)
             return "normal"
-        module = importlib.reload(module)
-        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
-        if cog_cls is None:
-            raise
-        await _add_grouped_cog(client, cog_cls(client), module_name)
+
+        await _add_grouped_cog(client, cog, module_name)
         return "grouped"
-    except discord.app_commands.errors.CommandLimitReached:
-        module = importlib.reload(module)
-        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
-        if cog_cls is None:
-            raise
-        await _add_grouped_cog(client, cog_cls(client), module_name)
-        return "grouped"
+    except Exception:
+        raise
 
 
 async def load_all_cogs(client: ScratchAIBot) -> None:
@@ -96,11 +94,10 @@ async def load_all_cogs(client: ScratchAIBot) -> None:
             continue
         name = path.stem
         try:
-            mode = await _load_cog_with_adaptive_commands(client, f"cogs.{name}")
+            mode = await _load_cog_adaptive(client, f"cogs.{name}")
             total += 1
             grouped += mode == "grouped"
-            suffix = " (Commands gruppiert)" if mode == "grouped" else ""
-            print(f"  [OK] {name}{suffix}")
+            print(f"  [OK] {name}" + (" (Commands gruppiert)" if mode == "grouped" else ""))
         except Exception:
             failed += 1
             logger.exception("Cog konnte nicht geladen werden: %s", name)
@@ -113,7 +110,6 @@ async def sync_commands_safely(client: ScratchAIBot) -> None:
     print(f"[SYNC] {len(roots)} globale Slash-Commands vorbereitet")
     if len(roots) > 100:
         logger.error("Mehr als 100 globale Slash-Commands erkannt (%s).", len(roots))
-        print("[SYNC] FEHLER: Mehr als 100 globale Slash-Commands")
         return
     try:
         synced = await client.tree.sync()
