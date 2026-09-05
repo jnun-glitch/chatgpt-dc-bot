@@ -1,308 +1,217 @@
-"""ScratchAI Discord bot entrypoint.
-
-Keeps only lifecycle/bootstrap functionality here. Feature commands live in
-Cogs so Slash-Commands are registered exactly once.
-"""
 from __future__ import annotations
 
-import asyncio
-import datetime
-import json
+import importlib
 import os
-import time
-import traceback
+import threading
 from pathlib import Path
-from threading import Thread
 
-from dotenv import load_dotenv
 import discord
-from discord import app_commands
+from dotenv import load_dotenv
+from flask import Flask, jsonify
 from discord.ext import commands
-from flask import Flask
 
-BOT_DIR = Path(__file__).resolve().parent
+from core.config import BOT_DIR
+from core.db import init_db
+from core.logging import logger
+
 load_dotenv(BOT_DIR / ".env", override=True)
-
-from core.ai_ticket import analyze_ticket  # noqa: E402
-from core.db import get_ticket_by_channel, init_db, update_ticket_ai  # noqa: E402
-from core.logging import logger  # noqa: E402
-
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
-COGS_DIR = BOT_DIR / "cogs"
-START_TIME = time.time()
-loaded_cogs: list[str] = []
-command_log: list[dict] = []
-MAX_LOG_ENTRIES = 100
-restart_count = 0
-
-app = Flask("bot")
 
 
 class ScratchAIBot(commands.Bot):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
             intents=discord.Intents.all(),
-            help_command=None,
-            allowed_mentions=discord.AllowedMentions(everyone=False, roles=False),
         )
 
     async def setup_hook(self) -> None:
         init_db()
         await load_all_cogs(self)
+        await sync_commands_safely(self)
+
+
+async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
+    """Register all root commands of a Cog below one slash-command group.
+
+    This is only used when the bot approaches Discord's 100 global root-command
+    limit. Listeners, tasks and command callbacks remain fully active.
+    """
+    root_commands = [
+        cmd for cmd in getattr(cog, "__cog_app_commands__", ())
+        if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)
+    ]
+    other_commands = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if cmd not in root_commands]
+    if not root_commands:
+        await client.add_cog(cog)
+        return
+
+    stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
+    if len(stem) > 32:
+        stem = stem[:32]
+    name = stem
+    existing = client.tree.get_command(name)
+    if existing is not None:
+        name = f"{stem[:27]}-cmd"
+        if client.tree.get_command(name) is not None:
+            raise RuntimeError(f"Kann keine eindeutige Command-Gruppe für {module_name} erstellen")
+
+    group = app_commands.Group(name=name, description=f"{stem} Commands")
+    for cmd in root_commands:
+        group.add_command(cmd)
+    cog.__cog_app_commands__ = tuple(other_commands) + (group,)
+    await client.add_cog(cog)
+
+
+async def _load_cog_with_adaptive_commands(client: ScratchAIBot, module_name: str) -> str:
+    """Load a Cog, compressing its root slash commands only when necessary."""
+    module = importlib.import_module(module_name)
+    setup = getattr(module, "setup", None)
+    if setup is None:
+        raise RuntimeError(f"{module_name} hat keine setup()-Funktion")
+
+    try:
+        await client.load_extension(module_name)
+        return "normal"
+    except discord.app_commands.errors.CommandAlreadyRegistered:
+        # The common collision in this project is the old admin /backup command.
+        # Prefer the dedicated BackupCog group /backup now|status.
+        if module_name == "cogs.backup":
+            client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
+            # Extension was only partially injected, so unload before retrying.
+            if module_name in client.extensions:
+                await client.unload_extension(module_name)
+            module = importlib.import_module(module_name)
+            setup = getattr(module, "setup")
+            await setup(client)
+            return "normal"
+        # Retry by loading a fresh Cog instance, but hide its root app commands
+        # from Cog._inject and register one compressed group instead.
+        if module_name in client.extensions:
+            await client.unload_extension(module_name)
+        cog_cls = None
+        for value in vars(module).values():
+            if isinstance(value, type) and issubclass(value, commands.Cog) and value is not commands.Cog:
+                cog_cls = value
+                break
+        if cog_cls is None:
+            raise
+        cog = cog_cls(client)
+        await _add_grouped_cog(client, cog, module_name)
+        return "grouped"
+    except discord.app_commands.errors.CommandLimitReached:
+        if module_name in client.extensions:
+            await client.unload_extension(module_name)
+        cog_cls = None
+        for value in vars(module).values():
+            if isinstance(value, type) and issubclass(value, commands.Cog) and value is not commands.Cog:
+                cog_cls = value
+                break
+        if cog_cls is None:
+            raise
+        cog = cog_cls(client)
+        await _add_grouped_cog(client, cog, module_name)
+        return "grouped"
+
+
+async def load_all_cogs(client: ScratchAIBot) -> None:
+    cogs_dir = BOT_DIR / "cogs"
+    total = 0
+    grouped = 0
+    failed = 0
+
+    for path in sorted(cogs_dir.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        cog_name = path.stem
+        module_name = f"cogs.{cog_name}"
         try:
-            synced = await self.tree.sync()
-            print(f"[SYNC] {len(synced)} globale Slash-Commands synchronisiert")
-        except Exception as exc:
-            logger.exception("Slash-Command-Sync fehlgeschlagen", exc_info=exc)
+            mode = await _load_cog_with_adaptive_commands(client, module_name)
+            total += 1
+            grouped += mode == "grouped"
+            print(f"  [OK] {cog_name}" + (" (Commands gruppiert)" if mode == "grouped" else ""))
+        except Exception:
+            failed += 1
+            logger.exception("Cog konnte nicht geladen werden: %s", cog_name)
+            print(f"  [FEHLER] {cog_name}")
+
+    print(f"{total}/{total + failed} Cogs geladen ({grouped} mit gruppierten Slash-Commands)")
+
+
+async def sync_commands_safely(client: ScratchAIBot) -> None:
+    roots = client.tree.get_commands()
+    print(f"[SYNC] {len(roots)} globale Slash-Commands vorbereitet")
+    if len(roots) > 100:
+        logger.error("Mehr als 100 globale Slash-Commands erkannt (%s). Sync wird übersprungen.", len(roots))
+        print("[SYNC] FEHLER: Mehr als 100 globale Slash-Commands – Sync übersprungen")
+        return
+    try:
+        synced = await client.tree.sync()
+        print(f"[SYNC] {len(synced)} globale Slash-Commands synchronisiert")
+    except discord.HTTPException as exc:
+        logger.exception("Slash-Command-Sync fehlgeschlagen")
+        print(f"[SYNC] FEHLER: {exc}")
 
 
 bot = ScratchAIBot()
+app = Flask(__name__)
 
 
-def get_uptime() -> str:
-    delta = int(time.time() - START_TIME)
-    hours, remainder = divmod(delta, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours}h {minutes}m {seconds}s"
+@bot.event
+async def on_ready() -> None:
+    print("[CONNECT] Verbindung hergestellt\n")
+    print(f"Eingeloggt als {bot.user} (ID: {bot.user.id if bot.user else 'unbekannt'})")
+    print(f"Auf {len(bot.guilds)} Servern")
+    print(f"Bot ist ONLINE! {len(bot.cogs)} Cogs geladen.")
 
 
-def log_command(name: str, user, status: str = "ok") -> None:
-    command_log.append({
-        "time": datetime.datetime.now().strftime("%H:%M:%S"),
-        "command": name,
-        "user": str(user),
-        "status": status,
-    })
-    del command_log[:-MAX_LOG_ENTRIES]
+@bot.event
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError) -> None:
+    logger.error("App-Command-Fehler: %s", error, exc_info=error)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ Beim Ausführen des Commands ist ein Fehler aufgetreten.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Beim Ausführen des Commands ist ein Fehler aufgetreten.", ephemeral=True)
+    except Exception:
+        pass
 
 
-async def load_all_cogs(client: commands.Bot) -> None:
-    loaded_cogs.clear()
-    if not COGS_DIR.exists():
-        logger.warning("Cogs directory fehlt: %s", COGS_DIR)
-        return
-    cog_names = sorted(
-        path.stem for path in COGS_DIR.glob("*.py")
-        if path.name != "__init__.py" and not path.name.startswith("_")
-    )
-    for cog in cog_names:
-        try:
-            await client.load_extension(f"cogs.{cog}")
-            loaded_cogs.append(cog)
-            print(f"  [OK] {cog}")
-        except Exception:
-            logger.exception("Cog konnte nicht geladen werden: %s", cog)
-            print(f"  [FEHLER] {cog}")
-    print(f"\n{len(loaded_cogs)}/{len(cog_names)} Cogs geladen")
+@app.get("/")
+def root():
+    return jsonify(status="ok", bot_ready=bot.is_ready(), guilds=len(bot.guilds), cogs=len(bot.cogs))
 
 
-async def unload_all_cogs(client: commands.Bot) -> None:
-    for cog in loaded_cogs[:]:
-        try:
-            await client.unload_extension(f"cogs.{cog}")
-        except Exception:
-            logger.exception("Cog konnte nicht entladen werden: %s", cog)
-    loaded_cogs.clear()
+@app.get("/health")
+def health():
+    return jsonify(status="ok" if bot.is_ready() else "starting")
 
 
-@app.route("/")
-def route_index():
-    online = bot.is_ready()
-    status = "Online" if online else "Offline"
-    return f"""<!doctype html><html><head><title>ScratchAI Bot</title>
-<meta http-equiv="refresh" content="30">
-<style>
-body {{ font-family:system-ui,sans-serif; background:#0e0e10; color:#ccc; padding:40px; text-align:center; }}
-h1 {{ color:#5865f2; }} .status {{ font-size:20px; margin:20px 0; }}
-.card {{ background:#1e1f22; border:1px solid #3f4147; border-radius:12px; padding:20px; display:inline-block; margin:10px; min-width:160px; }}
-.label {{ color:#8e9297; font-size:11px; text-transform:uppercase; }} .value {{ font-size:28px; font-weight:700; color:#fff; }}
-</style></head><body>
-<h1>ScratchAI Bot</h1><div class="status">● {status}</div>
-<div class="card"><div class="label">Uptime</div><div class="value">{get_uptime()}</div></div>
-<div class="card"><div class="label">Server</div><div class="value">{len(bot.guilds) if online else 0}</div></div>
-<div class="card"><div class="label">Cogs</div><div class="value">{len(loaded_cogs)}</div></div>
-<div class="card"><div class="label">Restarts</div><div class="value">{restart_count}</div></div>
-</body></html>"""
-
-
-@app.route("/health")
-def route_health():
-    ready = bot.is_ready()
-    return json.dumps({
-        "status": "ok" if ready else "starting",
-        "uptime": get_uptime(),
-        "guilds": len(bot.guilds) if ready else 0,
-        "cogs": loaded_cogs,
-        "cogs_loaded": len(loaded_cogs),
-        "restarts": restart_count,
-        "latency_ms": round(bot.latency * 1000) if bot.latency else None,
-    })
-
-
-def _read_int_env(name: str, default: int, minimum: int | None = None) -> int:
+def _read_int_env(name: str, default: int, minimum: int = 1) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
-        value = int(raw)
+        return max(minimum, int(raw))
     except ValueError:
         logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
         return default
-    if minimum is not None and value < minimum:
-        logger.warning("Env-Variable %s=%s ist kleiner als %s – Default %s verwendet.", name, value, minimum, default)
-        return default
-    return value
 
 
 def run_web() -> None:
-    port = _read_int_env("PORT", 8080, minimum=1)
-    if port > 65535:
-        logger.warning("PORT=%s liegt außerhalb des gültigen Bereichs – Default 8080 verwendet.", port)
-        port = 8080
+    port = _read_int_env("PORT", 8080)
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 def run_bot() -> None:
-    global restart_count
-    restart_count = 1
     if not BOT_TOKEN:
-        raise RuntimeError("DISCORD_TOKEN ist nicht gesetzt. Trage den Bot-Token in _inner_bot/.env ein.")
-    print("\n[START] Starte Discord-Bot...")
+        raise RuntimeError("DISCORD_TOKEN fehlt. Bitte .env prüfen.")
     try:
         bot.run(BOT_TOKEN, log_handler=None)
-    except discord.LoginFailure:
-        print(
-            "[FEHLER] Discord hat den Bot-Token abgelehnt (401 Unauthorized).\n"
-            "         Prüfe DISCORD_TOKEN in _inner_bot/.env.\n"
-            "         Falls der Token stimmt, erzeuge im Discord Developer Portal einen neuen Bot-Token."
-        )
-        raise
-    except KeyboardInterrupt:
-        print("\n[STOP] Manuell gestoppt.")
-    except Exception:
-        traceback.print_exc()
-        print("[STOP] Bot wurde wegen eines Startfehlers beendet.")
-        raise
-
-
-@bot.event
-async def on_ready():
-    print(f"\nEingeloggt als {bot.user} (ID: {bot.user.id})")
-    print(f"Auf {len(bot.guilds)} Servern")
-    await bot.change_presence(
-        activity=discord.Activity(type=discord.ActivityType.watching, name="ScratchAI | /help")
-    )
-    print(f"Bot ist ONLINE! {len(loaded_cogs)} Cogs geladen.\n")
-
-
-@bot.event
-async def on_connect():
-    print("[CONNECT] Verbindung hergestellt")
-
-
-@bot.event
-async def on_disconnect():
-    print("[DISCONNECT] Verbindung verloren - reconnectet automatisch...")
-
-
-@bot.event
-async def on_resumed():
-    print("[RESUME] Verbindung wiederhergestellt")
-
-
-@bot.event
-async def on_error(event, *args, **kwargs):
-    logger.exception("Unhandled Discord event error: %s", event)
-
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    command_name = interaction.command.qualified_name if interaction.command else "unknown"
-    log_command(command_name, interaction.user, "error")
-    logger.exception("Command error: /%s", command_name, exc_info=error)
-    message = "Beim Ausführen des Befehls ist ein Fehler aufgetreten."
-    if isinstance(error, app_commands.CheckFailure):
-        message = "Du hast keine Berechtigung für diesen Befehl."
-    elif isinstance(error, app_commands.CommandOnCooldown):
-        message = "Dieser Befehl ist gerade auf Cooldown. Bitte versuche es gleich erneut."
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
-
-
-async def _run_ai_ticket(message: discord.Message) -> None:
-    ticket = get_ticket_by_channel(str(message.channel.id))
-    if not ticket:
-        return
-    allowed = str(message.author.id) == str(ticket["user_id"])
-    if message.guild:
-        allowed = allowed or message.author.guild_permissions.manage_channels
-        role_names = {role.name.casefold() for role in message.author.roles}
-        allowed = allowed or bool(role_names & {"admin", "moderator", "support", "staff"})
-    if not allowed:
-        await message.channel.send("❌ Du hast keine Berechtigung für die AI-Ticketanalyse.")
-        return
-    await message.channel.send("🔍 **AI analysiert das komplette Ticket...**")
-    lines = [
-        f"Ticket #{ticket['ticket_number']:04d}",
-        f"Kategorie: {ticket.get('kategorie', 'Sonstiges')}",
-        f"Betreff: {ticket.get('betreff', 'Kein Betreff')}",
-        "",
-        "TICKETVERLAUF:",
-    ]
-    try:
-        async for msg in message.channel.history(limit=500, oldest_first=True):
-            if msg.content.strip().lower() == "!ai":
-                continue
-            content = msg.content.strip() or "[Kein Text]"
-            if msg.attachments:
-                content += " [Anhänge: " + ", ".join(a.filename for a in msg.attachments) + "]"
-            lines.append(f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}] {msg.author.display_name}: {content}")
-    except discord.Forbidden:
-        await message.channel.send("❌ Ich kann den Ticketverlauf nicht lesen.")
-        return
-    except Exception as exc:
-        logger.exception("Ticket-History konnte nicht gelesen werden", exc_info=exc)
-        await message.channel.send("❌ Der Ticketverlauf konnte nicht geladen werden.")
-        return
-    transcript = "\n".join(lines)
-    if len(transcript) > 60000:
-        transcript = transcript[:12000] + "\n\n[... älterer Verlauf gekürzt ...]\n\n" + transcript[-47000:]
-    try:
-        verdict = await asyncio.to_thread(analyze_ticket, transcript)
-        update_ticket_ai(str(message.channel.id), verdict)
-    except Exception as exc:
-        logger.exception("AI-Ticketanalyse fehlgeschlagen", exc_info=exc)
-        await message.channel.send(f"❌ AI-Analyse fehlgeschlagen: `{str(exc)[:300]}`")
-        log_command("!ai", message.author, "error")
-        return
-    embed = discord.Embed(
-        title=f"🤖 AI-Ticketanalyse #{ticket['ticket_number']:04d}",
-        description=verdict[:4096],
-        color=discord.Color.blurple(),
-    )
-    embed.set_footer(text=f"Analysiert mit DeepSeek • ausgelöst von {message.author.display_name}")
-    await message.channel.send(embed=embed)
-    log_command("!ai", message.author)
-
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-    if message.content.strip().lower() == "!ai":
-        await _run_ai_ticket(message)
-    await bot.process_commands(message)
+    except discord.LoginFailure as exc:
+        raise RuntimeError("Discord-Login fehlgeschlagen. DISCORD_TOKEN prüfen.") from exc
 
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("  ScratchAI Bot")
-    print("=" * 50)
-    print(f"  Token gesetzt: {'JA' if BOT_TOKEN else 'NEIN!'}")
-    print(f"  Webserver: Port {os.environ.get('PORT', '8080')}")
-    print("=" * 50)
-    Thread(target=run_web, daemon=True).start()
+    threading.Thread(target=run_web, daemon=True).start()
     run_bot()
