@@ -62,8 +62,8 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
 
-    # Dedicated BackupCog provides /backup now and /backup status. Remove the
-    # legacy AdminCog /backup root registration before loading BackupCog.
+    # The dedicated BackupCog owns the /backup group. Remove the old AdminCog
+    # root registration before injecting BackupCog, avoiding registration clash.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
 
@@ -71,8 +71,8 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
     roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
 
-    # Multi-command Cogs are compressed proactively so Discord's 100 global
-    # command limit cannot prevent later Cogs from loading.
+    # Proactively reduce root registrations for every multi-command Cog. This
+    # makes the global command budget predictable and keeps every Cog loaded.
     if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
