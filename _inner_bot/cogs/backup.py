@@ -1,4 +1,4 @@
-"""Automatische Bot-Backups alle fünf Minuten."""
+"""Automatische Bot-Backups."""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +24,6 @@ def _env_int(name: str, default: int, minimum: int) -> int:
         logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
         return default
 
-
 BACKUP_INTERVAL_SECONDS = _env_int("BACKUP_INTERVAL_SECONDS", 300, 60)
 BACKUP_RETENTION = _env_int("BACKUP_RETENTION", 288, 1)
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(DATA_DIR / "backups"))).resolve()
@@ -43,12 +42,7 @@ class BackupCog(commands.Cog):
         self.backup_loop.cancel()
 
     async def _make_backup(self) -> Path:
-        path = await asyncio.to_thread(
-            create_backup,
-            db_path=DB_PATH,
-            transcripts_dir=TRANSCRIPTS_DIR,
-            backup_dir=BACKUP_DIR,
-        )
+        path = await asyncio.to_thread(create_backup, db_path=DB_PATH, transcripts_dir=TRANSCRIPTS_DIR, backup_dir=BACKUP_DIR)
         await asyncio.to_thread(prune_backups, BACKUP_DIR, BACKUP_RETENTION)
         self.last_backup = path
         self.last_error = None
@@ -85,10 +79,7 @@ class BackupCog(commands.Cog):
             logger.exception("Manuelles Backup fehlgeschlagen", exc_info=exc)
             await interaction.followup.send(f"❌ Backup fehlgeschlagen: `{str(exc)[:300]}`", ephemeral=True)
             return
-        await interaction.followup.send(
-            f"✅ Backup erstellt: `{path.name}`\nAufbewahrung: {BACKUP_RETENTION} Backups.",
-            ephemeral=True,
-        )
+        await interaction.followup.send(f"✅ Backup erstellt: `{path.name}`\nAufbewahrung: {BACKUP_RETENTION} Backups.", ephemeral=True)
 
     @backup.command(name="status", description="Zeigt den Backup-Status")
     async def backup_status(self, interaction: discord.Interaction):
