@@ -39,18 +39,13 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
     if len(roots) <= 1:
         await client.add_cog(cog)
         return
-
-    # Keep the first command at its original root name. Group the rest so every
-    # Cog contributes at most two root registrations, avoiding Discord's 100 root limit.
-    primary = roots[0]
-    secondary = roots[1:]
+    primary, secondary = roots[0], roots[1:]
     stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
     group_name = f"{stem}-cmds"[:32]
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         group_name = f"{stem[:27]}-grp"
     if client.tree.get_command(group_name, type=discord.AppCommandType.chat_input):
         raise RuntimeError(f"Keine freie Command-Gruppe für {module_name}")
-
     group = app_commands.Group(name=group_name, description=f"Weitere {stem} Commands")
     for cmd in secondary:
         group.add_command(cmd)
@@ -63,20 +58,13 @@ async def _load_cog_adaptive(client: ScratchAIBot, module_name: str) -> str:
     cog_cls = _cog_class(module)
     if cog_cls is None:
         raise RuntimeError(f"Keine Cog-Klasse in {module_name} gefunden")
-
-    # Dedicated BackupCog provides /backup now and /backup status. Remove the
-    # legacy AdminCog root /backup registration before loading BackupCog.
     if module_name == "cogs.backup":
         client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
-
     cog = cog_cls(client)
-    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
-    roots = [cmd for cmd in commands_in_cog if getattr(cmd, "parent", None) is None]
-
+    roots = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if getattr(cmd, "parent", None) is None]
     if len(roots) <= 1:
         await client.add_cog(cog)
         return "normal"
-
     await _add_grouped_cog(client, cog, module_name)
     return "grouped"
 
