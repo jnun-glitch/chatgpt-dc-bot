@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 from discord.ext import commands
@@ -20,10 +21,7 @@ BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 
 class ScratchAIBot(commands.Bot):
     def __init__(self) -> None:
-        super().__init__(
-            command_prefix=commands.when_mentioned_or("!"),
-            intents=discord.Intents.all(),
-        )
+        super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=discord.Intents.all())
 
     async def setup_hook(self) -> None:
         init_db()
@@ -32,29 +30,23 @@ class ScratchAIBot(commands.Bot):
 
 
 async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
-    """Register all root commands of a Cog below one slash-command group.
-
-    This is only used when the bot approaches Discord's 100 global root-command
-    limit. Listeners, tasks and command callbacks remain fully active.
-    """
+    """Register root slash commands from one Cog under one group."""
+    commands_in_cog = list(getattr(cog, "__cog_app_commands__", ()))
     root_commands = [
-        cmd for cmd in getattr(cog, "__cog_app_commands__", ())
+        cmd for cmd in commands_in_cog
         if getattr(cmd, "parent", None) is None and isinstance(cmd, app_commands.Command)
     ]
-    other_commands = [cmd for cmd in getattr(cog, "__cog_app_commands__", ()) if cmd not in root_commands]
+    other_commands = [cmd for cmd in commands_in_cog if cmd not in root_commands]
     if not root_commands:
         await client.add_cog(cog)
         return
 
-    stem = module_name.rsplit(".", 1)[-1].replace("_", "-")
-    if len(stem) > 32:
-        stem = stem[:32]
+    stem = module_name.rsplit(".", 1)[-1].replace("_", "-")[:32]
     name = stem
-    existing = client.tree.get_command(name)
-    if existing is not None:
+    if client.tree.get_command(name, type=discord.AppCommandType.chat_input):
         name = f"{stem[:27]}-cmd"
-        if client.tree.get_command(name) is not None:
-            raise RuntimeError(f"Kann keine eindeutige Command-Gruppe für {module_name} erstellen")
+    if client.tree.get_command(name, type=discord.AppCommandType.chat_input):
+        raise RuntimeError(f"Keine freie Command-Gruppe für {module_name}")
 
     group = app_commands.Group(name=name, description=f"{stem} Commands")
     for cmd in root_commands:
@@ -64,7 +56,6 @@ async def _add_grouped_cog(client: ScratchAIBot, cog, module_name: str) -> None:
 
 
 async def _load_cog_with_adaptive_commands(client: ScratchAIBot, module_name: str) -> str:
-    """Load a Cog, compressing its root slash commands only when necessary."""
     module = importlib.import_module(module_name)
     setup = getattr(module, "setup", None)
     if setup is None:
@@ -74,67 +65,46 @@ async def _load_cog_with_adaptive_commands(client: ScratchAIBot, module_name: st
         await client.load_extension(module_name)
         return "normal"
     except discord.app_commands.errors.CommandAlreadyRegistered:
-        # The common collision in this project is the old admin /backup command.
-        # Prefer the dedicated BackupCog group /backup now|status.
         if module_name == "cogs.backup":
+            # AdminCog historically contains a legacy root /backup command.
+            # Remove that legacy registration and load the dedicated BackupCog.
             client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
-            # Extension was only partially injected, so unload before retrying.
-            if module_name in client.extensions:
-                await client.unload_extension(module_name)
-            module = importlib.import_module(module_name)
+            module = importlib.reload(module)
             setup = getattr(module, "setup")
             await setup(client)
             return "normal"
-        # Retry by loading a fresh Cog instance, but hide its root app commands
-        # from Cog._inject and register one compressed group instead.
-        if module_name in client.extensions:
-            await client.unload_extension(module_name)
-        cog_cls = None
-        for value in vars(module).values():
-            if isinstance(value, type) and issubclass(value, commands.Cog) and value is not commands.Cog:
-                cog_cls = value
-                break
+        module = importlib.reload(module)
+        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
         if cog_cls is None:
             raise
-        cog = cog_cls(client)
-        await _add_grouped_cog(client, cog, module_name)
+        await _add_grouped_cog(client, cog_cls(client), module_name)
         return "grouped"
     except discord.app_commands.errors.CommandLimitReached:
-        if module_name in client.extensions:
-            await client.unload_extension(module_name)
-        cog_cls = None
-        for value in vars(module).values():
-            if isinstance(value, type) and issubclass(value, commands.Cog) and value is not commands.Cog:
-                cog_cls = value
-                break
+        module = importlib.reload(module)
+        cog_cls = next((v for v in vars(module).values() if isinstance(v, type) and issubclass(v, commands.Cog) and v is not commands.Cog), None)
         if cog_cls is None:
             raise
-        cog = cog_cls(client)
-        await _add_grouped_cog(client, cog, module_name)
+        await _add_grouped_cog(client, cog_cls(client), module_name)
         return "grouped"
 
 
 async def load_all_cogs(client: ScratchAIBot) -> None:
     cogs_dir = BOT_DIR / "cogs"
-    total = 0
-    grouped = 0
-    failed = 0
-
+    total = grouped = failed = 0
     for path in sorted(cogs_dir.glob("*.py")):
         if path.name.startswith("_"):
             continue
-        cog_name = path.stem
-        module_name = f"cogs.{cog_name}"
+        name = path.stem
         try:
-            mode = await _load_cog_with_adaptive_commands(client, module_name)
+            mode = await _load_cog_with_adaptive_commands(client, f"cogs.{name}")
             total += 1
             grouped += mode == "grouped"
-            print(f"  [OK] {cog_name}" + (" (Commands gruppiert)" if mode == "grouped" else ""))
+            suffix = " (Commands gruppiert)" if mode == "grouped" else ""
+            print(f"  [OK] {name}{suffix}")
         except Exception:
             failed += 1
-            logger.exception("Cog konnte nicht geladen werden: %s", cog_name)
-            print(f"  [FEHLER] {cog_name}")
-
+            logger.exception("Cog konnte nicht geladen werden: %s", name)
+            print(f"  [FEHLER] {name}")
     print(f"{total}/{total + failed} Cogs geladen ({grouped} mit gruppierten Slash-Commands)")
 
 
@@ -142,8 +112,8 @@ async def sync_commands_safely(client: ScratchAIBot) -> None:
     roots = client.tree.get_commands()
     print(f"[SYNC] {len(roots)} globale Slash-Commands vorbereitet")
     if len(roots) > 100:
-        logger.error("Mehr als 100 globale Slash-Commands erkannt (%s). Sync wird übersprungen.", len(roots))
-        print("[SYNC] FEHLER: Mehr als 100 globale Slash-Commands – Sync übersprungen")
+        logger.error("Mehr als 100 globale Slash-Commands erkannt (%s).", len(roots))
+        print("[SYNC] FEHLER: Mehr als 100 globale Slash-Commands")
         return
     try:
         synced = await client.tree.sync()
