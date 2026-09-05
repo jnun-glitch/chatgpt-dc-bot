@@ -34,14 +34,14 @@ class BackupCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.last_backup: Path | None = None
-        self.last_error: str | None = None
+        self.last_backup = None
+        self.last_error = None
         self.backup_loop.start()
 
     def cog_unload(self):
         self.backup_loop.cancel()
 
-    async def _make_backup(self) -> Path:
+    async def _make_backup(self):
         path = await asyncio.to_thread(create_backup, db_path=DB_PATH, transcripts_dir=TRANSCRIPTS_DIR, backup_dir=BACKUP_DIR)
         await asyncio.to_thread(prune_backups, BACKUP_DIR, BACKUP_RETENTION)
         self.last_backup = path
