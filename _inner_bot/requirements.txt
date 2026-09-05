@@ -7,4 +7,5 @@ openai>=1.0.0
 faster-whisper>=1.2.0
 python-dotenv>=1.0.0
 Pillow>=10,<12
+websockets>=15,<16
 pytest>=8,<10
