@@ -1,9 +1,8 @@
 """ScratchAI Discord bot entrypoint.
 
-The core deliberately stays small: Discord client lifecycle, extension loading,
-health endpoint and the ticket-AI message hook. Feature code belongs in Cogs.
+Keeps only lifecycle/bootstrap functionality here. Feature commands live in
+Cogs so Slash-Commands are registered exactly once.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +23,9 @@ from flask import Flask
 BOT_DIR = Path(__file__).resolve().parent
 load_dotenv(BOT_DIR / ".env", override=True)
 
-from core.ai_ticket import analyze_ticket
-from core.db import get_ticket_by_channel, init_db, update_ticket_ai
-from core.logging import logger
+from core.ai_ticket import analyze_ticket  # noqa: E402
+from core.db import get_ticket_by_channel, init_db, update_ticket_ai  # noqa: E402
+from core.logging import logger  # noqa: E402
 
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 COGS_DIR = BOT_DIR / "cogs"
@@ -40,13 +39,10 @@ app = Flask("bot")
 
 
 class ScratchAIBot(commands.Bot):
-    """Main bot using discord.py's full extension/commands framework."""
-
     def __init__(self):
-        intents = discord.Intents.all()
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
-            intents=intents,
+            intents=discord.Intents.all(),
             help_command=None,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False),
         )
@@ -82,15 +78,12 @@ def log_command(name: str, user, status: str = "ok") -> None:
 
 
 async def load_all_cogs(client: commands.Bot) -> None:
-    """Discover every Python Cog in cogs/ instead of maintaining a stale list."""
     loaded_cogs.clear()
     if not COGS_DIR.exists():
         logger.warning("Cogs directory fehlt: %s", COGS_DIR)
         return
-
     cog_names = sorted(
-        path.stem
-        for path in COGS_DIR.glob("*.py")
+        path.stem for path in COGS_DIR.glob("*.py")
         if path.name != "__init__.py" and not path.name.startswith("_")
     )
     for cog in cog_names:
@@ -171,15 +164,10 @@ def run_web() -> None:
 
 
 def run_bot() -> None:
-    """Start the Discord client exactly once."""
     global restart_count
     restart_count = 1
-
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "DISCORD_TOKEN ist nicht gesetzt. Trage den Bot-Token in _inner_bot/.env ein."
-        )
-
+        raise RuntimeError("DISCORD_TOKEN ist nicht gesetzt. Trage den Bot-Token in _inner_bot/.env ein.")
     print("\n[START] Starte Discord-Bot...")
     try:
         bot.run(BOT_TOKEN, log_handler=None)
@@ -233,37 +221,21 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     command_name = interaction.command.qualified_name if interaction.command else "unknown"
     log_command(command_name, interaction.user, "error")
     logger.exception("Command error: /%s", command_name, exc_info=error)
-
     message = "Beim Ausführen des Befehls ist ein Fehler aufgetreten."
     if isinstance(error, app_commands.CheckFailure):
         message = "Du hast keine Berechtigung für diesen Befehl."
     elif isinstance(error, app_commands.CommandOnCooldown):
         message = "Dieser Befehl ist gerade auf Cooldown. Bitte versuche es gleich erneut."
-
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
     else:
         await interaction.response.send_message(message, ephemeral=True)
 
 
-@bot.tree.command(name="ping", description="Zeigt die Bot-Latenz")
-async def cmd_ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000) if bot.latency else 0
-    log_command("ping", interaction.user)
-    await interaction.response.send_message(f"Pong! {latency}ms")
-
-
-@bot.tree.command(name="hallo", description="Sagt Hallo zurück")
-async def cmd_hallo(interaction: discord.Interaction):
-    log_command("hallo", interaction.user)
-    await interaction.response.send_message(f"Hallo {interaction.user.mention}! Wie geht es dir?")
-
-
 async def _run_ai_ticket(message: discord.Message) -> None:
     ticket = get_ticket_by_channel(str(message.channel.id))
     if not ticket:
         return
-
     allowed = str(message.author.id) == str(ticket["user_id"])
     if message.guild:
         allowed = allowed or message.author.guild_permissions.manage_channels
@@ -272,7 +244,6 @@ async def _run_ai_ticket(message: discord.Message) -> None:
     if not allowed:
         await message.channel.send("❌ Du hast keine Berechtigung für die AI-Ticketanalyse.")
         return
-
     await message.channel.send("🔍 **AI analysiert das komplette Ticket...**")
     lines = [
         f"Ticket #{ticket['ticket_number']:04d}",
@@ -296,7 +267,6 @@ async def _run_ai_ticket(message: discord.Message) -> None:
         logger.exception("Ticket-History konnte nicht gelesen werden", exc_info=exc)
         await message.channel.send("❌ Der Ticketverlauf konnte nicht geladen werden.")
         return
-
     transcript = "\n".join(lines)
     if len(transcript) > 60000:
         transcript = transcript[:12000] + "\n\n[... älterer Verlauf gekürzt ...]\n\n" + transcript[-47000:]
@@ -308,7 +278,6 @@ async def _run_ai_ticket(message: discord.Message) -> None:
         await message.channel.send(f"❌ AI-Analyse fehlgeschlagen: `{str(exc)[:300]}`")
         log_command("!ai", message.author, "error")
         return
-
     embed = discord.Embed(
         title=f"🤖 AI-Ticketanalyse #{ticket['ticket_number']:04d}",
         description=verdict[:4096],
