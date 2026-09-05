@@ -1,8 +1,8 @@
 """Creator alerts for YouTube, Twitch and X.
 
-YouTube and Twitch use persistent event state so the same event is announced
-once across polls and bot restarts. The first poll seeds the current feed
-without replaying old uploads.
+YouTube and Twitch use persistent event state. The first poll initializes the
+current feed/state without replaying old events. Later polls announce only new
+YouTube uploads/live events and new Twitch stream sessions.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -31,10 +32,11 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     if not raw:
         return default
     try:
-        return max(minimum, int(raw))
+        value = int(raw)
     except ValueError:
         logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
         return default
+    return max(minimum, value)
 
 
 POLL_SECONDS = _env_int("NOTIFY_POLL_SECONDS", 60, 30)
@@ -64,15 +66,24 @@ def normalize_account(provider: str, account: str) -> str:
 
 def _http_get(url: str, headers: dict[str, str] | None = None, timeout: int = 15) -> tuple[int, str]:
     req = urllib.request.Request(url, headers=headers or {"User-Agent": "ScratchAI/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return int(response.status), response.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return int(response.status), response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Netzwerkfehler: {exc.reason}") from exc
 
 
 def _http_json(url: str, headers: dict[str, str] | None = None, timeout: int = 15) -> dict:
     status, text = _http_get(url, headers=headers, timeout=timeout)
     if status < 200 or status >= 300:
         raise RuntimeError(f"HTTP {status}: {text[:300]}")
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Ungültige JSON-Antwort") from exc
 
 
 def resolve_youtube_channel_id(account: str) -> str:
@@ -100,7 +111,11 @@ def youtube_feed(channel_id: str) -> list[dict]:
         published = entry.findtext("atom:published", default="", namespaces=YOUTUBE_NS)
         link = entry.find("atom:link", YOUTUBE_NS)
         author = entry.find("atom:author", YOUTUBE_NS)
-        author_name = author.findtext("atom:name", default="YouTube", namespaces=YOUTUBE_NS) if author is not None else "YouTube"
+        author_name = (
+            author.findtext("atom:name", default="YouTube", namespaces=YOUTUBE_NS)
+            if author is not None
+            else "YouTube"
+        )
         items.append({
             "id": video_id,
             "title": html.unescape(entry.findtext("atom:title", default="", namespaces=YOUTUBE_NS)),
@@ -112,8 +127,8 @@ def youtube_feed(channel_id: str) -> list[dict]:
     return items
 
 
-def youtube_video_state(video_id: str) -> dict:
-    """Best-effort live classification of a public YouTube watch page."""
+def youtube_video_state(video_id: str) -> dict[str, bool]:
+    """Best-effort classification of a public YouTube watch page."""
     try:
         _, text = _http_get(f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}")
     except Exception:
@@ -134,6 +149,59 @@ def youtube_kind(video_state: dict) -> str:
     return "live" if video_state.get("is_live_content") and video_state.get("is_live_now") else "video"
 
 
+def youtube_initial_marker(items: list[dict]) -> str | None:
+    """Return the newest feed ID used to seed a new subscription without alerts."""
+    ordered = sorted(
+        (item for item in items if item.get("id")),
+        key=lambda item: (str(item.get("published") or ""), str(item.get("id") or "")),
+    )
+    return str(ordered[-1]["id"]) if ordered else None
+
+
+def twitch_should_notify(previous_state: str | None, stream_id: str) -> bool:
+    return bool(stream_id) and previous_state != stream_id
+
+
+def youtube_thumbnail(video_id: str) -> str:
+    return f"https://i.ytimg.com/vi/{urllib.parse.quote(video_id, safe='')}/hqdefault.jpg"
+
+
+def make_youtube_embed(item: dict, kind: str = "video") -> discord.Embed:
+    is_live = kind == "live"
+    title = "🔴 YouTube ist LIVE!" if is_live else "📺 Neues YouTube-Video"
+    url = item["url"]
+    embed = discord.Embed(
+        title=title,
+        description=f"**{item.get('title') or 'Neuer Upload'}**",
+        url=url,
+        timestamp=datetime.now(timezone.utc),
+        color=discord.Color.red(),
+    )
+    embed.set_image(url=youtube_thumbnail(item["id"]))
+    embed.add_field(name="🔗 Anschauen", value=f"[YouTube öffnen]({url})", inline=False)
+    embed.set_footer(text=item.get("creator") or "YouTube")
+    return embed
+
+
+def make_twitch_embed(stream: dict, account: str) -> discord.Embed:
+    url = f"https://twitch.tv/{account}"
+    embed = discord.Embed(
+        title="🔴 Twitch ist LIVE!",
+        description=f"**{stream.get('title') or 'Twitch Stream'}**",
+        url=url,
+        timestamp=datetime.now(timezone.utc),
+        color=discord.Color.purple(),
+    )
+    embed.add_field(name="🎮 Kategorie", value=str(stream.get("game_name") or "Unbekannt"), inline=True)
+    embed.add_field(name="👀 Zuschauer", value=f"{int(stream.get('viewer_count') or 0):,}", inline=True)
+    embed.add_field(name="🔗 Stream", value=f"[Twitch öffnen]({url})", inline=False)
+    thumb = stream.get("thumbnail_url")
+    if thumb:
+        embed.set_image(url=thumb.replace("{width}", "640").replace("{height}", "360"))
+    embed.set_footer(text=stream.get("user_name") or account)
+    return embed
+
+
 _twitch_token: tuple[str, float] | None = None
 
 
@@ -149,9 +217,17 @@ def twitch_app_token() -> str:
         "grant_type": "client_credentials",
     }).encode()
     req = urllib.request.Request("https://id.twitch.tv/oauth2/token", data=body, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    token = payload["access_token"]
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Twitch Token HTTP {exc.code}: {body_text[:200]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Twitch Token Netzwerkfehler: {exc.reason}") from exc
+    token = str(payload.get("access_token") or "")
+    if not token:
+        raise RuntimeError("Twitch API lieferte keinen Access-Token")
     _twitch_token = (token, time.time() + int(payload.get("expires_in", 3600)))
     return token
 
@@ -218,11 +294,12 @@ def x_posts(user_id: str, since_id: str | None = None) -> list[dict]:
 
 def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
     """Return each unseen item once, in chronological order."""
-    def sort_key(item: dict) -> tuple[int, str, str]:
-        timestamp = str(item.get("published") or item.get("created_at") or "")
-        return (0, timestamp, str(item.get("id") or "")) if timestamp else (1, "", str(item.get("id") or ""))
-
-    ordered = sorted(items, key=sort_key)
+    ordered = sorted(
+        items,
+        key=lambda item: (0, str(item.get("published") or item.get("created_at") or ""), str(item.get("id") or ""))
+        if item.get("published") or item.get("created_at")
+        else (1, "", str(item.get("id") or "")),
+    )
     unique: list[dict] = []
     seen: set[str] = set()
     for item in ordered:
@@ -238,10 +315,6 @@ def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
         if item["id"] == marker:
             return unique[index + 1 :]
     return unique
-
-
-def twitch_should_notify(previous_state: str | None, stream_id: str) -> bool:
-    return bool(stream_id) and previous_state != stream_id
 
 
 @dataclass(slots=True)
@@ -291,7 +364,10 @@ class SocialCog(commands.Cog):
             "SELECT id,guild_id,provider,account,channel_id,role_id,last_seen,state,enabled "
             "FROM social_notifications WHERE enabled=1"
         ).fetchall()
-        return [Subscription(int(r[0]), int(r[1]), r[2], r[3], int(r[4]), int(r[5]) if r[5] else None, r[6], r[7], bool(r[8])) for r in rows]
+        return [
+            Subscription(int(r[0]), int(r[1]), r[2], r[3], int(r[4]), int(r[5]) if r[5] else None, r[6], r[7], bool(r[8]))
+            for r in rows
+        ]
 
     def _save(self, sub_id: int, last_seen: str | None = None, state: str | None = None):
         db = get_db()
@@ -311,7 +387,11 @@ class SocialCog(commands.Cog):
 
     @group.command(name="add", description="Creator-Alert hinzufügen")
     @app_commands.describe(provider="youtube, twitch oder x", account="Kanal/Login/@Name", channel="Discord-Kanal", role="Optionale Ping-Rolle")
-    @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch"), app_commands.Choice(name="X", value="x")])
+    @app_commands.choices(provider=[
+        app_commands.Choice(name="YouTube", value="youtube"),
+        app_commands.Choice(name="Twitch", value="twitch"),
+        app_commands.Choice(name="X", value="x"),
+    ])
     @app_commands.checks.has_permissions(manage_guild=True)
     async def add(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str, channel: discord.TextChannel, role: discord.Role | None = None):
         p = provider.value
@@ -336,7 +416,11 @@ class SocialCog(commands.Cog):
 
     @group.command(name="remove", description="Creator-Alert entfernen")
     @app_commands.describe(provider="Provider", account="Kanal/Login/@Name")
-    @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch"), app_commands.Choice(name="X", value="x")])
+    @app_commands.choices(provider=[
+        app_commands.Choice(name="YouTube", value="youtube"),
+        app_commands.Choice(name="Twitch", value="twitch"),
+        app_commands.Choice(name="X", value="x"),
+    ])
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
         p = provider.value
@@ -345,7 +429,10 @@ class SocialCog(commands.Cog):
         except Exception:
             account = normalize_account(p, account)
         db = get_db()
-        cur = db.execute("DELETE FROM social_notifications WHERE guild_id=? AND provider=? AND account=?", (str(interaction.guild_id), p, account))
+        cur = db.execute(
+            "DELETE FROM social_notifications WHERE guild_id=? AND provider=? AND account=?",
+            (str(interaction.guild_id), p, account),
+        )
         db.commit()
         await interaction.response.send_message("🗑️ Entfernt." if cur.rowcount else "⚠️ Nicht gefunden.", ephemeral=True)
 
@@ -353,22 +440,20 @@ class SocialCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def list_(self, interaction: discord.Interaction):
         rows = get_db().execute(
-            "SELECT provider,account,channel_id,role_id,enabled FROM social_notifications WHERE guild_id=? ORDER BY provider,account",
+            "SELECT provider,account,channel_id,role_id,enabled FROM social_notifications "
+            "WHERE guild_id=? ORDER BY provider,account",
             (str(interaction.guild_id),),
         ).fetchall()
         if not rows:
             await interaction.response.send_message("📡 Keine Creator-Alerts eingerichtet.", ephemeral=True)
             return
-        lines = []
-        for p, account, channel_id, role_id, enabled in rows:
-            channel = interaction.guild.get_channel(int(channel_id))
-            lines.append(
-                f"{'🟢' if enabled else '⏸️'} **{p}** `{account}` → {channel.mention if channel else '#gelöscht'}"
-                + (f" · <@&{role_id}>" if role_id else "")
-            )
         chunks: list[str] = []
         current = "📡 **Creator Alerts**\n"
-        for line in lines:
+        for p, account, channel_id, role_id, enabled in rows:
+            channel = interaction.guild.get_channel(int(channel_id))
+            line = f"{'🟢' if enabled else '⏸️'} **{p}** `{account}` → {channel.mention if channel else '#gelöscht'}"
+            if role_id:
+                line += f" · <@&{role_id}>"
             if len(current) + len(line) + 1 > 1900:
                 chunks.append(current.rstrip())
                 current = ""
@@ -381,7 +466,11 @@ class SocialCog(commands.Cog):
 
     @group.command(name="test", description="Test-Alert senden")
     @app_commands.describe(provider="Provider", account="Kanal/Login/@Name")
-    @app_commands.choices(provider=[app_commands.Choice(name="YouTube", value="youtube"), app_commands.Choice(name="Twitch", value="twitch"), app_commands.Choice(name="X", value="x")])
+    @app_commands.choices(provider=[
+        app_commands.Choice(name="YouTube", value="youtube"),
+        app_commands.Choice(name="Twitch", value="twitch"),
+        app_commands.Choice(name="X", value="x"),
+    ])
     @app_commands.checks.has_permissions(manage_guild=True)
     async def test(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
         p = provider.value
@@ -400,14 +489,20 @@ class SocialCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message("❌ Zielkanal nicht gefunden.", ephemeral=True)
             return
-        embed = discord.Embed(
-            title=f"📡 {p.upper()} Test",
-            description=f"Alert-System für `{account}` funktioniert.",
-            timestamp=datetime.now(timezone.utc),
-            color=discord.Color.blurple(),
-        )
+        if p == "youtube":
+            embed = make_youtube_embed({"id": "dQw4w9WgXcQ", "title": "Beispiel-Video", "url": "https://youtu.be/dQw4w9WgXcQ", "creator": account})
+        elif p == "twitch":
+            embed = make_twitch_embed({"title": "Beispiel-Stream", "game_name": "Test", "viewer_count": 42, "user_name": account}, account)
+        else:
+            embed = discord.Embed(title="𝕏 Test Alert", description=f"Alert-System für `{account}` funktioniert.", color=discord.Color.dark_grey())
+        role_id = int(row[1]) if row[1] else None
+        role = interaction.guild.get_role(role_id) if role_id else None
         try:
-            await channel.send(embed=embed)
+            await channel.send(
+                content=role.mention if role else None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=bool(role), everyone=False, users=False),
+            )
         except discord.Forbidden:
             await interaction.response.send_message("❌ Ich darf im Zielkanal keine Nachrichten senden.", ephemeral=True)
             return
@@ -446,71 +541,26 @@ class SocialCog(commands.Cog):
             )
         except discord.Forbidden as exc:
             raise RuntimeError(f"Keine Sendeberechtigung in Kanal {sub.channel_id}") from exc
+        except discord.HTTPException as exc:
+            raise RuntimeError(f"Discord-Fehler in Kanal {sub.channel_id}: {exc}") from exc
 
     async def _youtube(self, sub: Subscription):
         items = await asyncio.to_thread(youtube_feed, sub.account)
         if not items:
             return
-
-        # Live state is independent from last_seen. Scheduled broadcasts may
-        # become live after newer normal uploads have entered the feed.
-        live_item = None
-        for item in items:
-            state = await asyncio.to_thread(youtube_video_state, item["id"])
-            if youtube_kind(state) == "live":
-                live_item = item
-                break
-
-        live_key = f"ytlive:{live_item['id']}" if live_item else None
-        live_sent = False
-        if live_item and sub.state != live_key:
-            await self._send(sub, self._youtube_live_embed(live_item))
-            self._save(sub.id, state=live_key)
-            live_sent = True
-
         if not sub.last_seen:
-            # Seed the current upload feed without replaying old videos.
-            self._save(sub.id, last_seen=items[0]["id"])
+            marker = youtube_initial_marker(items)
+            if marker:
+                self._save(sub.id, last_seen=marker)
             return
 
         unseen = latest_unseen(items, sub.last_seen)
         for item in unseen:
-            if live_sent and live_item and item["id"] == live_item["id"]:
-                self._save(sub.id, last_seen=item["id"])
-                continue
             state = await asyncio.to_thread(youtube_video_state, item["id"])
-            if youtube_kind(state) == "live":
-                # Live notification is handled by the persistent live state above.
-                self._save(sub.id, last_seen=item["id"])
-                continue
-            await self._send(sub, self._youtube_video_embed(item))
+            kind = youtube_kind(state)
+            embed = make_youtube_embed(item, kind=kind)
+            await self._send(sub, embed)
             self._save(sub.id, last_seen=item["id"])
-
-    @staticmethod
-    def _youtube_video_embed(item: dict) -> discord.Embed:
-        embed = discord.Embed(
-            title="📺 Neues YouTube-Video",
-            description=f"**{item['title'] or 'Neues Video'}**",
-            url=item["url"],
-            timestamp=datetime.now(timezone.utc),
-            color=discord.Color.red(),
-        )
-        embed.set_image(url=f"https://i.ytimg.com/vi/{item['id']}/hqdefault.jpg")
-        embed.set_footer(text=item.get("creator") or "YouTube")
-        return embed
-
-    @staticmethod
-    def _youtube_live_embed(item: dict) -> discord.Embed:
-        embed = discord.Embed(
-            title="🔴 YouTube ist LIVE!",
-            description=f"**{item['title'] or 'Livestream'}**",
-            url=item["url"],
-            timestamp=datetime.now(timezone.utc),
-            color=discord.Color.red(),
-        )
-        embed.set_image(url=f"https://i.ytimg.com/vi/{item['id']}/hqdefault.jpg")
-        embed.set_footer(text=item.get("creator") or "YouTube")
-        return embed
 
     async def _twitch(self, sub: Subscription):
         stream = await asyncio.to_thread(twitch_stream, sub.account)
@@ -518,30 +568,10 @@ class SocialCog(commands.Cog):
             if sub.state != "offline":
                 self._save(sub.id, state="offline")
             return
-
-        stream_id = str(stream.get("id", ""))
+        stream_id = str(stream.get("id") or "")
         if not twitch_should_notify(sub.state, stream_id):
             return
-
-        url = f"https://twitch.tv/{sub.account}"
-        embed = discord.Embed(
-            title="🔴 Twitch ist LIVE!",
-            description=(
-                f"**{stream.get('title') or 'Twitch Stream'}**\n"
-                f"🎮 {stream.get('game_name') or 'Unbekannte Kategorie'}\n"
-                f"👀 {stream.get('viewer_count', 0)} Zuschauer"
-            ),
-            url=url,
-            timestamp=datetime.now(timezone.utc),
-            color=discord.Color.purple(),
-        )
-        started_at = stream.get("started_at")
-        if started_at:
-            embed.add_field(name="Gestartet", value=started_at.replace("T", " ").replace("Z", " UTC"), inline=False)
-        thumb = stream.get("thumbnail_url")
-        if thumb:
-            embed.set_image(url=thumb.replace("{width}", "640").replace("{height}", "360"))
-        embed.set_footer(text=f"Twitch • {sub.account}")
+        embed = make_twitch_embed(stream, sub.account)
         await self._send(sub, embed)
         self._save(sub.id, state=stream_id)
 
@@ -549,11 +579,12 @@ class SocialCog(commands.Cog):
         user = await asyncio.to_thread(x_user, sub.account)
         posts = await asyncio.to_thread(x_posts, user["id"], sub.last_seen)
         normalized = [{**post, "published": post.get("created_at")} for post in posts]
-        unseen = latest_unseen(normalized, sub.last_seen)
-        if not unseen:
-            if posts and not sub.last_seen:
-                self._save(sub.id, last_seen=latest_unseen(normalized, None)[-1]["id"])
+        if not sub.last_seen:
+            marker = youtube_initial_marker(normalized)
+            if marker:
+                self._save(sub.id, last_seen=marker)
             return
+        unseen = latest_unseen(normalized, sub.last_seen)
         for post in unseen:
             url = f"https://x.com/{user.get('username', sub.account)}/status/{post['id']}"
             embed = discord.Embed(
