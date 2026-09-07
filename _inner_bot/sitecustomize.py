@@ -18,10 +18,11 @@ BOT_DIR = Path(__file__).resolve().parent
 load_dotenv(BOT_DIR / ".env", override=False)
 
 
-# Discord currently allows 100 global top-level slash commands.  Keep a
+# Discord currently allows 100 global top-level slash commands. Keep a
 # deliberate safety margin so a new Cog cannot make every later Cog fail to
 # load. Overflow commands are placed into normal Discord command groups.
 try:
+    import discord
     from discord import app_commands
     from discord.app_commands import CommandTree, Group
 
@@ -29,7 +30,7 @@ try:
     _ROUTER_ROOT_LIMIT = 80
     _GROUP_CHILD_LIMIT = 25
     _GROUP_PREFIX = "scratchai-more"
-    _routing_groups: dict[int, Group] = {}
+    _routing_groups: dict[tuple[int, str], Group] = {}
 
     def _module_key(command) -> str:
         binding = getattr(command, "binding", None)
@@ -40,7 +41,7 @@ try:
 
     def _next_group(tree: CommandTree, key: str) -> Group:
         tree_id = id(tree)
-        group_key = hash((tree_id, key))
+        group_key = (tree_id, key)
         existing = _routing_groups.get(group_key)
         if existing is not None and len(existing.commands) < _GROUP_CHILD_LIMIT:
             return existing
@@ -55,10 +56,18 @@ try:
                 return group
             index += 1
 
-    def _safe_add_command(self, command, /, *, guild=None, guilds=app_commands.MISSING, override=False):
+    def _safe_add_command(
+        self,
+        command,
+        /,
+        *,
+        guild=None,
+        guilds=discord.utils.MISSING,
+        override=False,
+    ):
         # Guild-scoped commands have their own namespace and are not part of
         # the global command budget handled here.
-        if guild is not None or guilds is not app_commands.MISSING:
+        if guild is not None or guilds is not discord.utils.MISSING:
             return _ORIGINAL_ADD_COMMAND(
                 self, command, guild=guild, guilds=guilds, override=override
             )
@@ -91,7 +100,7 @@ try:
         print(f"[COMMAND-ROUTER] /{group.name} {command.name}")
 
     CommandTree.add_command = _safe_add_command
-except Exception:
+except Exception as exc:
     # Startup must never fail just because this optional guard is unavailable.
     # discord.py will still enforce its normal command limits.
-    pass
+    print(f"[COMMAND-ROUTER] deaktiviert: {exc}")
