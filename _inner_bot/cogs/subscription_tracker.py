@@ -149,7 +149,7 @@ class SubscriptionTrackerCog(commands.Cog):
         db.execute("CREATE INDEX IF NOT EXISTS idx_social_sub_tracking_enabled ON social_subscriber_tracking(enabled, provider)")
         db.commit()
 
-    def _configured_sources(self) -> list[tuple[int, str, str, int]]:
+    def _configured_sources(self) -> list[tuple[int, str, str, str, int]]:
         rows = get_db().execute(
             "SELECT id,guild_id,provider,account,channel_id FROM social_notifications "
             "WHERE enabled=1 AND provider IN ('youtube','twitch')"
