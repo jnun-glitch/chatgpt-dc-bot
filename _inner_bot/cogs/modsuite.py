@@ -5,7 +5,6 @@ Adds a compact case system and moderator tooling without copying another bot's i
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -38,6 +37,10 @@ class ModerationSuite(commands.Cog):
         CREATE INDEX IF NOT EXISTS idx_mod_cases_user ON mod_cases(guild_id, user_id, id DESC);
         CREATE INDEX IF NOT EXISTS idx_mod_cases_guild ON mod_cases(guild_id, id DESC);
         """)
+        columns = {row[1] for row in cur.execute("PRAGMA table_info(user_warns)").fetchall()}
+        if "case_id" not in columns:
+            cur.execute("ALTER TABLE user_warns ADD COLUMN case_id INTEGER")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_user_warns_case ON user_warns(case_id)")
         conn.commit()
         conn.close()
 
@@ -91,9 +94,7 @@ class ModerationSuite(commands.Cog):
         rows = self._fetch_cases(interaction.guild_id, limit=10)
         if not rows:
             return await interaction.response.send_message("📋 Noch keine Moderationsfälle gespeichert.", ephemeral=True)
-        lines = []
-        for row in rows:
-            lines.append(f"`#{row['id']:04d}` **{row['action']}** · <@{row['user_id']}> · {row['reason'][:100]}")
+        lines = [f"`#{row['id']:04d}` **{row['action']}** · <@{row['user_id']}> · {row['reason'][:100]}" for row in rows]
         embed = discord.Embed(title="📋 Moderationsfälle", description="\n".join(lines), color=discord.Color.blurple())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -114,18 +115,24 @@ class ModerationSuite(commands.Cog):
     async def warn_remove(self, interaction: discord.Interaction, case_id: int):
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("UPDATE mod_cases SET active=0 WHERE guild_id=? AND id=? AND action='WARN' AND active=1", (str(interaction.guild_id), case_id))
+        cur.execute(
+            "UPDATE mod_cases SET active=0 WHERE guild_id=? AND id=? AND action='WARN' AND active=1",
+            (str(interaction.guild_id), case_id),
+        )
         changed = cur.rowcount
+        row = None
         if changed:
-            cur.execute("SELECT user_id, reason FROM mod_cases WHERE guild_id=? AND id=?", (str(interaction.guild_id), case_id))
+            cur.execute(
+                "SELECT user_id FROM mod_cases WHERE guild_id=? AND id=?",
+                (str(interaction.guild_id), case_id),
+            )
             row = cur.fetchone()
-        else:
-            row = None
+            cur.execute("DELETE FROM user_warns WHERE case_id=?", (case_id,))
         conn.commit()
         conn.close()
         if not changed:
             return await interaction.response.send_message("❌ Dieser aktive WARN-Case wurde nicht gefunden.", ephemeral=True)
-        await interaction.response.send_message(f"✅ Verwarnung `#{case_id:04d}` wurde deaktiviert.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Verwarnung `#{case_id:04d}` wurde entfernt und zählt nicht mehr.", ephemeral=True)
         if row:
             try:
                 channel = find_channel(interaction.guild, "admin-log")
@@ -165,7 +172,10 @@ class ModerationSuite(commands.Cog):
         cid = self._case(interaction.guild_id, user.id, interaction.user.id, "WARN", grund)
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("INSERT INTO user_warns (user_id,guild_id,grund,von) VALUES (?,?,?,?)", (str(user.id), str(interaction.guild_id), grund[:1000], str(interaction.user)))
+        cur.execute(
+            "INSERT INTO user_warns (user_id,guild_id,grund,von,case_id) VALUES (?,?,?,?,?)",
+            (str(user.id), str(interaction.guild_id), grund[:1000], str(interaction.user), cid),
+        )
         conn.commit()
         conn.close()
         await interaction.response.send_message(f"⚠️ {user.mention} wurde verwarnt. **Case #{cid:04d}**", ephemeral=True)
