@@ -1,4 +1,4 @@
-"""Erzeugt atomare Bot-Backups aus SQLite + Transkripten.
+"""Erzeugt und prüft atomare Bot-Backups aus SQLite + Transkripten.
 
 Keine Geheimnisse wie .env oder Tokens werden in Backups aufgenommen.
 """
@@ -18,7 +18,6 @@ EXCLUDED_NAMES = {".env", ".env.local", ".env.production", "secrets.json"}
 
 
 def _utc_stamp() -> str:
-    """Create a filename-safe UTC timestamp with microsecond precision."""
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
 
 
@@ -46,12 +45,7 @@ def _copy_sqlite_consistently(source_path: Path, destination_path: Path) -> None
         source.close()
 
 
-def create_backup(
-    *,
-    db_path: Path,
-    transcripts_dir: Path,
-    backup_dir: Path,
-) -> Path:
+def create_backup(*, db_path: Path, transcripts_dir: Path, backup_dir: Path) -> Path:
     """Erzeugt ein vollständiges Daten-Backup als ZIP und gibt dessen Pfad zurück."""
     db_path = Path(db_path)
     transcripts_dir = Path(transcripts_dir)
@@ -69,9 +63,10 @@ def create_backup(
             sqlite3.connect(str(staged_db)).close()
 
         manifest: dict = {
-            "format": 1,
+            "format": 2,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "database": "database.sqlite3",
+            "database_sha256": _sha256(staged_db),
             "transcripts": [],
         }
 
@@ -108,6 +103,56 @@ def create_backup(
                 temp_zip.unlink(missing_ok=True)
 
     return final_path
+
+
+def verify_backup(path: Path) -> tuple[bool, list[str]]:
+    """Prüft ZIP, Manifest, Datenbank und alle gespeicherten Transcript-Hashes."""
+    path = Path(path)
+    errors: list[str] = []
+    if not path.is_file():
+        return False, [f"Backup fehlt: {path}"]
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            bad_member = archive.testzip()
+            if bad_member:
+                errors.append(f"Defektes ZIP-Mitglied: {bad_member}")
+            try:
+                manifest = json.loads(archive.read("manifest.json"))
+            except (KeyError, json.JSONDecodeError) as exc:
+                return False, [f"Manifest ungültig: {exc}"]
+
+            db_bytes = archive.read(manifest.get("database", "database.sqlite3"))
+            expected_db = manifest.get("database_sha256")
+            if expected_db:
+                actual_db = hashlib.sha256(db_bytes).hexdigest()
+                if actual_db != expected_db:
+                    errors.append("Datenbank-Hash stimmt nicht mit dem Manifest überein")
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".sqlite3") as temp_db:
+                    temp_db.write(db_bytes)
+                    temp_db.flush()
+                    check = sqlite3.connect(temp_db.name)
+                    check.execute("PRAGMA quick_check")
+                    check.close()
+            except sqlite3.DatabaseError as exc:
+                errors.append(f"SQLite-Prüfung fehlgeschlagen: {exc}")
+
+            for item in manifest.get("transcripts", []):
+                member = "transcripts/" + item["path"]
+                try:
+                    data = archive.read(member)
+                except KeyError:
+                    errors.append(f"Transcript fehlt: {item['path']}")
+                    continue
+                if len(data) != int(item.get("size", len(data))):
+                    errors.append(f"Transcript-Größe falsch: {item['path']}")
+                if item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"]:
+                    errors.append(f"Transcript-Hash falsch: {item['path']}")
+    except zipfile.BadZipFile:
+        return False, ["Backup ist kein gültiges ZIP-Archiv"]
+    except OSError as exc:
+        return False, [f"Backup konnte nicht gelesen werden: {exc}"]
+    return not errors, errors
 
 
 def prune_backups(backup_dir: Path, keep: int = 288) -> list[Path]:
