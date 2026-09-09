@@ -1,4 +1,4 @@
-"""Automatische Bot-Backups alle fünf Minuten."""
+"""Automatische Bot-Backups mit Integritätsprüfung."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from discord.ext import commands, tasks
 
-from core.backup import create_backup, prune_backups
+from core.backup import create_backup, prune_backups, verify_backup
 from core.config import DB_PATH, DATA_DIR, TRANSCRIPTS_DIR
 from core.logging import logger
 
@@ -19,12 +19,7 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     try:
         return max(minimum, int(raw))
     except ValueError:
-        logger.warning(
-            "Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.",
-            name,
-            raw,
-            default,
-        )
+        logger.warning("Env-Variable %s ist keine gültige Zahl (%r) – Default %s verwendet.", name, raw, default)
         return default
 
 
@@ -34,30 +29,27 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(DATA_DIR / "backups"))).resol
 
 
 class BackupCog(commands.Cog):
-    """Nur der automatische Backup-Dienst.
-
-    Der manuelle Slash-Command /backup gehört bereits zum Admin-Cog.
-    Ein zweiter /backup-Befehl würde mit Discords CommandTree kollidieren.
-    """
+    """Automatischer Backup-Dienst; der manuelle /backup-Command bleibt im Admin-Cog."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.last_backup: Path | None = None
         self.last_error: str | None = None
+        self.last_verified: bool | None = None
         self.backup_loop.start()
 
     def cog_unload(self):
         self.backup_loop.cancel()
 
     async def _make_backup(self) -> Path:
-        path = await asyncio.to_thread(
-            create_backup,
-            db_path=DB_PATH,
-            transcripts_dir=TRANSCRIPTS_DIR,
-            backup_dir=BACKUP_DIR,
-        )
+        path = await asyncio.to_thread(create_backup, db_path=DB_PATH, transcripts_dir=TRANSCRIPTS_DIR, backup_dir=BACKUP_DIR)
+        valid, errors = await asyncio.to_thread(verify_backup, path)
+        if not valid:
+            self.last_verified = False
+            raise RuntimeError("Backup-Integritätsprüfung fehlgeschlagen: " + "; ".join(errors[:3]))
         await asyncio.to_thread(prune_backups, BACKUP_DIR, BACKUP_RETENTION)
         self.last_backup = path
+        self.last_verified = True
         self.last_error = None
         return path
 
@@ -65,7 +57,7 @@ class BackupCog(commands.Cog):
     async def backup_loop(self):
         try:
             path = await self._make_backup()
-            logger.info("Automatisches Backup erstellt: %s", path)
+            logger.info("Automatisches Backup erstellt und geprüft: %s", path)
         except Exception as exc:
             self.last_error = str(exc)
             logger.exception("Automatisches Backup fehlgeschlagen", exc_info=exc)
@@ -75,7 +67,7 @@ class BackupCog(commands.Cog):
         await self.bot.wait_until_ready()
         try:
             path = await self._make_backup()
-            logger.info("Startup-Backup erstellt: %s", path)
+            logger.info("Startup-Backup erstellt und geprüft: %s", path)
         except Exception as exc:
             self.last_error = str(exc)
             logger.exception("Startup-Backup fehlgeschlagen", exc_info=exc)
