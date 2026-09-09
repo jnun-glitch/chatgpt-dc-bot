@@ -83,6 +83,24 @@ Dazu gehören unter anderem:
 
 Moderationsfunktionen prüfen nicht nur den Command-Decorator, sondern wichtige Aktionen zusätzlich zur Laufzeit.
 
+### 🛡️ Moderation V2
+
+Die Moderation besitzt zusätzlich ein eigenes Case-System.
+
+- eindeutige Moderations-Cases
+- `/case` für einzelne Fälle
+- `/modlog` für die letzten Fälle
+- `/modhistory` für die Historie eines Users
+- `/warn-add` mit Case-ID und Punkten
+- `/warn-remove` zum Entfernen aktiver Warnungen
+- `/cases` für eine Moderationsübersicht
+- konfigurierbare Warn-Ablaufzeiten
+- automatische Bereinigung abgelaufener Warnungen
+- konfigurierbare Punkte pro Warnung
+- kontrollierte Eskalation ab einem Punkteschwellwert
+
+Standardmäßig laufen Warnungen nach 30 Tagen ab. Die Eskalation setzt standardmäßig ab 3 aktiven Punkten einen kurzen Timeout, sofern Discord-Berechtigungen und Rollen-Hierarchie dies erlauben.
+
 ---
 
 # 🤖 AutoMod
@@ -195,6 +213,10 @@ Beispiel-Konfiguration:
 ```env
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/ticket-analyze
 ```
+
+### 🧠 KI V2 Runtime
+
+Die bestehende KI-Schnittstelle bleibt bewusst stabil. Ein zusätzlicher Runtime-Cog räumt inaktive Rate-Limit-Sessions automatisch auf, damit die interne Session-Struktur bei langer Laufzeit nicht unkontrolliert wächst.
 
 ---
 
@@ -469,8 +491,10 @@ chatgpt-dc-bot/
 │   │   ├── admin.py
 │   │   ├── afk.py
 │   │   ├── ai.py
+│   │   ├── ai_v2.py
 │   │   ├── audit.py
 │   │   ├── automod.py
+│   │   ├── backup.py
 │   │   ├── birthdays.py
 │   │   ├── community.py
 │   │   ├── counting.py
@@ -478,9 +502,13 @@ chatgpt-dc-bot/
 │   │   ├── fun.py
 │   │   ├── giveaways.py
 │   │   ├── help.py
+│   │   ├── modsuite.py
 │   │   ├── music.py
 │   │   ├── reactionroles.py
+│   │   ├── scheduler_v2.py
 │   │   ├── serverconfig.py
+│   │   ├── social.py
+│   │   ├── twitch_eventsub.py
 │   │   ├── voice.py
 │   │   └── weitere Feature-Cogs
 │   ├── data/
@@ -580,6 +608,11 @@ VOICE_WHISPER_MODEL=base
 VOICE_WHISPER_DEVICE=cpu
 VOICE_WHISPER_COMPUTE_TYPE=int8
 VOICE_REVIEW_COOLDOWN=30
+
+WARN_EXPIRY_DAYS=30
+WARN_POINTS=1
+WARN_ESCALATION_THRESHOLD=3
+WARN_ESCALATION_MINUTES=10
 ```
 
 > **Wichtig:** Niemals Bot-Tokens, Secrets oder andere Zugangsdaten committen.
@@ -610,6 +643,10 @@ python bot.py
 | `VOICE_WHISPER_DEVICE` | Rechengerät, z. B. `cpu` |
 | `VOICE_WHISPER_COMPUTE_TYPE` | Whisper Compute Type, z. B. `int8` |
 | `VOICE_REVIEW_COOLDOWN` | Cooldown für Voice-Review-Hinweise |
+| `WARN_EXPIRY_DAYS` | Lebensdauer aktiver Warnungen in Tagen; `0` = nie |
+| `WARN_POINTS` | Punkte pro neuer Warnung |
+| `WARN_ESCALATION_THRESHOLD` | aktive Punkte bis zur automatischen Eskalation |
+| `WARN_ESCALATION_MINUTES` | Dauer des automatischen Timeouts |
 
 ---
 
@@ -624,6 +661,8 @@ python -m compileall -q _inner_bot
 pytest -q
 PYTHONPATH=_inner_bot python -c "import bot; print('bot import OK')"
 ```
+
+Zusätzlich existieren Offline-Simulationen für Social-Alerts sowie Tests für die neuen Runtime-/Scheduler-Komponenten. Dadurch können wichtige Logikpfade geprüft werden, ohne echte Twitch-, YouTube-, X- oder Discord-Aktionen auszulösen.
 
 Dadurch werden Syntax-/Import-Probleme und vorhandene Tests automatisch geprüft.
 
@@ -702,6 +741,8 @@ Die Architektur ist auf weitere Ausbaustufen vorbereitet.
 - mehr Community-/SMP-Automatisierung
 - Discord ↔ externe Systeme / Server-Connectoren
 
+> **Aktueller V2-Fokus:** Moderation, KI-Runtime, persistente Erinnerungen, Social-Alerts, Backup-Integrität und Testabdeckung werden laufend verbessert. Custom Commands sind bewusst noch nicht Bestandteil dieser Phase. Der Minecraft-Connector bleibt ebenfalls außerhalb des aktuellen Umfangs.
+
 ---
 
 # 🧩 Entwicklungsprinzipien
@@ -750,6 +791,16 @@ Für neue Features:
 **Aktiv in Entwicklung.**
 
 ScratchAI ist als langfristig erweiterbarer Discord-Bot gedacht. Die aktuelle Architektur bildet bereits Moderation, Sicherheit, Server-Setup, Community, Voice, Musik, KI und Dashboard-Funktionen in getrennten Modulen ab.
+
+---
+
+# 📚 Inspiration & Referenzen
+
+Einige konzeptionelle Ideen für Community- und Moderationsfunktionen wurden beim Blick auf etablierte Discord-Bot-Projekte wie **Red-DiscordBot** berücksichtigt. ScratchAI ist jedoch **keine 1:1-Kopie** und verwendet eine eigene Architektur und eigene Implementierungen.
+
+- urlRed-DiscordBot auf GitHubhttps://github.com/Cog-Creators/Red-DiscordBot
+
+Diese Referenz dient ausschließlich als Hinweis auf die konzeptionelle Inspiration für bestimmte Bot-Funktionen.
 
 ---
 
