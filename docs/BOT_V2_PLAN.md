@@ -1,37 +1,25 @@
-# ScratchAI Bot V2 – Ausbau ohne Minecraft-Connector
+# ScratchAI Bot V2 – Stabilitätssprint abgeschlossen
 
-Der Minecraft-Connector bleibt bewusst außen vor. Alle anderen Bereiche werden als eigenständige Module weiterentwickelt.
+Der Minecraft-Connector bleibt bewusst außen vor. Der aktuelle Stabilitätssprint aus GitHub Issue #1 ist umgesetzt bzw. sicher integriert.
 
-## Bereits im Projekt vorhanden / ausgebaut
+## Erledigt
 
-- AI-Chat, Scratch-Spiel-Generator, Analyse und Refinement
-- Moderation, AutoMod, Audit-Logging und AFK/Community-Funktionen
-- Backups mit Retention
-- Creator-Notifications für YouTube, Twitch und X
-- Twitch EventSub für schnellere Live-Erkennung, mit Polling als Fallback
-- Web-Dashboard mit Live-Nachrichten, Audit, Server-/Member-Ansichten, Executor und Konfiguration
-- Slash-Command-Limit-Schutz durch Gruppierung von Overflow-Commands
-- automatische Social-Alert-Deduplizierung
-- Offline-Simulationen für Twitch/YouTube/X
-- bounded Runtime-Monitoring und Systemdiagnostik
+- AI-Chat, Scratch-Spiel-Generator, Analyse und Refinement bleiben erhalten.
+- AutoMod nutzt die gemeinsame `core.badwords`-API.
+- AutoMod-Warn-/Timeout-State wird persistent in SQLite gespeichert.
+- Ticket-AI ist als `/ticket-ai analyze` verfügbar, mit Berechtigungsprüfung, Cooldown und begrenzter Parallelität.
+- Der bestehende `/ai`-Game-Analyse-Command bleibt unangetastet; der frühere `!ai`-Ticketpfad bleibt als Übergang bestehen.
+- `/system diagnostics` und `/system metrics` bleiben erhalten.
+- `/system health` prüft API-Konfiguration, Datenbank, Voice, Music-Abhängigkeiten, Cogs und Slash-Root-Limit.
+- Regressionstests für Custom-Command-Priorität, Ticket-AI-Runtime, AutoMod-Strikes, Transcript-Escaping, Twitch-Deduplizierung und Music-Queue wurden ergänzt.
+- Discord-Gateway-Intents wurden inventarisiert und vor einer riskanten Reduzierung dokumentiert.
+- Creator-Notifications für YouTube, Twitch und X sowie Twitch EventSub bleiben enthalten.
+- `.env`-/Integrationsdokumentation wurde erweitert.
 
-## Neue System-Schicht
+## Warum `/ticket-ai` statt `/ai`
 
-`core/monitoring.py` hält nur begrenzte Counter, Latenz-Samples und kleine Diagnose-Events. Es werden keine Nachrichteninhalte, Tokens oder Secrets gespeichert.
+Der Bot besitzt bereits einen `/ai`-Command für Spiel-/Feature-Analyse. Ein Überschreiben hätte diese bestehende Funktion entfernt. Deshalb verwendet die Ticketanalyse den eindeutigen Root `/ticket-ai`, während `!ai` als rückwärtskompatibler Übergang bestehen bleibt.
 
-`cogs/monitoring.py` stellt bereit:
+## Vor einer Intent-Reduzierung
 
-- `/system diagnostics` – Bot, DB, Command-Limit, Cogs und Laufzeit prüfen
-- `/system metrics` – Laufzeitmetriken ansehen
-- Discord-Ready/Disconnect-Zähler
-- Command-Erfolgs-/Fehlerzähler
-
-## Nächste Ausbaustufen
-
-1. AI: einheitliche Request-Limits, bessere Fehlerklassifizierung und Kosten-/Nutzungsmetriken.
-2. Moderation: konfigurierbare Regeln pro Server, bessere Eskalationsstufen und belastbare Audit-Fehlerlogs.
-3. Dashboard: Metrics-Seite, Systemdiagnose, Notification-Verwaltung und sicherere Admin-Aktionen.
-4. Social: Live-State bei Subscription, Retry/Backoff und bessere Provider-Validierung.
-5. Tests: Unit-, Integrations- und Offline-End-to-End-Simulationen für alle externen Provider.
-6. Deployment: Production-Webserver statt Flask-Development-Server, Healthcheck und graceful shutdown.
-7. Minecraft-Connector: erst in einer späteren Phase; bis dahin bleiben die Systeme unabhängig.
+Die Anwendung sollte in der echten Discord-Umgebung getestet werden, insbesondere Prefix-Commands, Verifizierung, Moderation, Tickets und Voice/Music. Erst danach sollte `discord.Intents.all()` schrittweise reduziert werden.
