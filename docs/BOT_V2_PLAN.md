@@ -3,7 +3,6 @@
 Der Minecraft-Connector bleibt bewusst außen vor. Der aktuelle Stabilitätssprint aus GitHub Issue #1 ist umgesetzt bzw. sicher integriert.
 
 ## Erledigt
-
 - AutoMod nutzt die gemeinsame `core.badwords`-API.
 - AutoMod-Warn-/Timeout-State wird persistent in SQLite gespeichert.
 - Ticket-AI ist als `/ticket-ai analyze` verfügbar, mit Berechtigungsprüfung, Cooldown und begrenzter Parallelität.
@@ -16,9 +15,7 @@ Der Minecraft-Connector bleibt bewusst außen vor. Der aktuelle Stabilitätsspri
 - `.env`-/Integrationsdokumentation inklusive Ticket-AI Runtime-Einstellungen ist aktualisiert.
 
 ## Warum `/ticket-ai` statt `/ai`
-
 Der Bot besitzt bereits einen `/ai`-Command für Spiel-/Feature-Analyse. Ein Überschreiben hätte diese bestehende Funktion entfernt. Deshalb verwendet die Ticketanalyse den eindeutigen Root `/ticket-ai`, während `!ai` als rückwärtskompatibler Übergang bestehen bleibt.
 
 ## Vor einer Intent-Reduzierung
-
 Die Anwendung sollte in der echten Discord-Umgebung getestet werden, insbesondere Prefix-Commands, Verifizierung, Moderation, Tickets und Voice/Music. Erst danach sollte `discord.Intents.all()` schrittweise reduziert werden.
