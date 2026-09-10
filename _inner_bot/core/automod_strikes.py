@@ -4,11 +4,11 @@ Keeps escalation state across restarts without storing message content.
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
 from core.config import DB_PATH
-import sqlite3
 
 
 SCHEMA = """
@@ -51,19 +51,19 @@ def get_strike_state(guild_id: int, user_id: int) -> dict[str, Any]:
             (str(guild_id), str(user_id)),
         ).fetchone()
         if not row:
-            return {"guild_id": str(guild_id), "user_id": str(user_id), "strikes": 0, "timeout_level": 0, "last_reason": ""}
+            return {
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
+                "strikes": 0,
+                "timeout_level": 0,
+                "last_reason": "",
+            }
         return dict(row)
     finally:
         conn.close()
 
 
-def record_strike(guild_id: int, user_id: int, reason: str) -> dict[str, Any]:
-    state = get_strike_state(guild_id, user_id)
-    strikes = int(state.get("strikes", 0)) + 1
-    timeout_level = int(state.get("timeout_level", 0))
-    if strikes >= 3:
-        strikes = 0
-        timeout_level += 1
+def save_strike_state(guild_id: int, user_id: int, strikes: int, timeout_level: int, reason: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect()
     try:
@@ -73,12 +73,19 @@ def record_strike(guild_id: int, user_id: int, reason: str) -> dict[str, Any]:
             "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
             "strikes=excluded.strikes,timeout_level=excluded.timeout_level,"
             "last_reason=excluded.last_reason,updated_at=excluded.updated_at",
-            (str(guild_id), str(user_id), strikes, timeout_level, reason[:200], now),
+            (str(guild_id), str(user_id), max(0, int(strikes)), max(0, int(timeout_level)), reason[:200], now),
         )
         conn.commit()
     finally:
         conn.close()
-    state.update({"strikes": strikes, "timeout_level": timeout_level, "last_reason": reason[:200], "updated_at": now})
+
+
+def record_strike(guild_id: int, user_id: int, reason: str) -> dict[str, Any]:
+    state = get_strike_state(guild_id, user_id)
+    strikes = int(state.get("strikes", 0)) + 1
+    timeout_level = int(state.get("timeout_level", 0))
+    save_strike_state(guild_id, user_id, strikes, timeout_level, reason)
+    state.update({"strikes": strikes, "timeout_level": timeout_level, "last_reason": reason[:200]})
     return state
 
 
