@@ -121,21 +121,38 @@ def verify_backup(path: Path) -> tuple[bool, list[str]]:
             except (KeyError, json.JSONDecodeError) as exc:
                 return False, [f"Manifest ungültig: {exc}"]
 
-            db_bytes = archive.read(manifest.get("database", "database.sqlite3"))
+            try:
+                database_member = manifest.get("database", "database.sqlite3")
+                db_bytes = archive.read(database_member)
+            except KeyError:
+                errors.append("Datenbankdatei fehlt im Backup")
+                db_bytes = b""
+
             expected_db = manifest.get("database_sha256")
-            if expected_db:
+            if expected_db and db_bytes:
                 actual_db = hashlib.sha256(db_bytes).hexdigest()
                 if actual_db != expected_db:
                     errors.append("Datenbank-Hash stimmt nicht mit dem Manifest überein")
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".sqlite3") as temp_db:
-                    temp_db.write(db_bytes)
-                    temp_db.flush()
-                    check = sqlite3.connect(temp_db.name)
-                    check.execute("PRAGMA quick_check")
-                    check.close()
-            except sqlite3.DatabaseError as exc:
-                errors.append(f"SQLite-Prüfung fehlgeschlagen: {exc}")
+
+            if db_bytes:
+                # NamedTemporaryFile remains open on Windows, which prevents
+                # sqlite3 from reopening the same file. TemporaryDirectory lets
+                # us close the database file before SQLite opens it.
+                with tempfile.TemporaryDirectory(prefix="scratchai_verify_") as temp_dir:
+                    temp_db = Path(temp_dir) / "database.sqlite3"
+                    temp_db.write_bytes(db_bytes)
+                    check = None
+                    try:
+                        check = sqlite3.connect(str(temp_db))
+                        result = check.execute("PRAGMA quick_check").fetchone()
+                        if not result or str(result[0]).lower() != "ok":
+                            detail = str(result[0]) if result else "keine Antwort"
+                            errors.append(f"SQLite-Prüfung fehlgeschlagen: {detail}")
+                    except (sqlite3.DatabaseError, OSError) as exc:
+                        errors.append(f"SQLite-Prüfung fehlgeschlagen: {exc}")
+                    finally:
+                        if check is not None:
+                            check.close()
 
             for item in manifest.get("transcripts", []):
                 member = "transcripts/" + item["path"]
