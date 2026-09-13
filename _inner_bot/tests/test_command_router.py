@@ -32,3 +32,28 @@ def test_command_tree_can_hold_more_than_router_headroom_before_compaction():
             callback=callback,
         ))
     assert len(bot.tree.get_commands()) == 91
+
+
+def test_compaction_reduces_overflow_and_preserves_commands():
+    import bot as bot_module
+
+    client = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    for index in range(95):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.send_message("ok", ephemeral=True)
+        command = app_commands.Command(
+            name=f"router-test-{index}",
+            description="Command router compaction test",
+            callback=callback,
+        )
+        # Simulate Cog binding so the compactor has a deterministic owner.
+        class FakeCog(commands.Cog):
+            pass
+        binding = FakeCog(client)
+        command.binding = binding
+        client.tree.add_command(command)
+
+    bot_module._compact_global_commands(client)
+    roots = client.tree.get_commands()
+    assert len(roots) <= bot_module.MAX_GLOBAL_ROOT_COMMANDS
+    assert sum(len(group.commands) if isinstance(group, app_commands.Group) else 1 for group in roots) == 95
