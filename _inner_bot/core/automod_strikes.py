@@ -81,12 +81,27 @@ def save_strike_state(guild_id: int, user_id: int, strikes: int, timeout_level: 
 
 
 def record_strike(guild_id: int, user_id: int, reason: str) -> dict[str, Any]:
-    state = get_strike_state(guild_id, user_id)
-    strikes = int(state.get("strikes", 0)) + 1
-    timeout_level = int(state.get("timeout_level", 0))
-    save_strike_state(guild_id, user_id, strikes, timeout_level, reason)
-    state.update({"strikes": strikes, "timeout_level": timeout_level, "last_reason": reason[:200]})
-    return state
+    """Atomically increment the strike counter and return the new state."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO automod_strikes(guild_id,user_id,strikes,timeout_level,last_reason,updated_at) "
+            "VALUES(?,?,1,0,?,?) "
+            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "strikes=automod_strikes.strikes + 1,"
+            "last_reason=excluded.last_reason,updated_at=excluded.updated_at",
+            (str(guild_id), str(user_id), reason[:200], now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT guild_id,user_id,strikes,timeout_level,last_reason,updated_at "
+            "FROM automod_strikes WHERE guild_id=? AND user_id=?",
+            (str(guild_id), str(user_id)),
+        ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
 
 
 def reset_strikes(guild_id: int, user_id: int) -> None:
