@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -34,3 +35,22 @@ def test_automod_strikes_can_reset(tmp_path, monkeypatch):
     state = strikes.get_strike_state(123, 456)
     assert state["strikes"] == 0
     assert state["timeout_level"] == 0
+
+
+def test_record_strike_increments_atomically(tmp_path, monkeypatch):
+    import core.automod_strikes as strikes
+
+    db_file = tmp_path / "strikes.db"
+    monkeypatch.setattr(strikes, "DB_PATH", db_file)
+    strikes.init_automod_strikes()
+
+    async def scenario():
+        results = await asyncio.gather(*(
+            asyncio.to_thread(strikes.record_strike, 123, 456, f"reason-{i}")
+            for i in range(8)
+        ))
+        assert max(int(result["strikes"]) for result in results) == 8
+        final = strikes.get_strike_state(123, 456)
+        assert final["strikes"] == 8
+
+    asyncio.run(scenario())
