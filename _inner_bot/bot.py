@@ -183,6 +183,10 @@ async def load_all_cogs(client: commands.Bot) -> None:
     )
     for cog in cog_names:
         try:
+            if cog == "backup":
+                # BackupCog replaces the legacy admin /backup command with
+                # the verified /backup now and /backup status group.
+                client.tree.remove_command("backup", type=discord.AppCommandType.chat_input)
             await client.load_extension(f"cogs.{cog}")
             loaded_cogs.append(cog)
             print(f"  [OK] {cog}")

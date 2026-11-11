@@ -40,7 +40,7 @@ Der Bot baut einen Live-Alert mit:
 
 Außerdem wird geprüft, dass dieselbe Stream-ID **nicht zweimal** als neuer Live-Start erkannt wird.
 
-Das entspricht dem echten Twitch-Prinzip: EventSub liefert bei einem Online-Event eine Stream-ID; der Bot kann diese als Dedupe-Marker verwenden. Twitch dokumentiert `stream.online` als Event für den Start eines Streams. 
+Das entspricht dem echten Twitch-Prinzip: EventSub liefert bei einem Online-Event eine Stream-ID; der Bot kann diese als Dedupe-Marker verwenden. Twitch dokumentiert `stream.online` als Event für den Start eines Streams.
 
 ### YouTube
 
