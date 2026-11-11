@@ -161,6 +161,20 @@ Prüfe zuerst:
 
 Die normale Twitch-Polling-Funktion bleibt als Fallback aktiv.
 
+## 8. Twitch-Abonnentenzahl überwachen
+
+Der Bot kann zusätzlich Änderungen der Subscriber-Zahl melden. Twitch erlaubt die Abfrage nur für den Broadcaster, zu dem der User Token gehört. Dieser Token braucht den Scope `channel:read:subscriptions`; der oben erzeugte EventSub-Token ohne Scopes reicht dafür nicht.
+
+Erstelle einen User Token mit dem Broadcaster-Konto und `channel:read:subscriptions`, dann trage ein:
+
+```env
+TWITCH_SUBSCRIBER_ACCESS_TOKEN=TOKEN_DES_BROADCASTERS
+TWITCH_SUBSCRIBER_LOGIN=dein_twitch_login
+SOCIAL_SUBSCRIBER_POLL_SECONDS=300
+```
+
+Der Creator muss mit `/notify add` eingetragen sein und sein Twitch-Login muss mit `TWITCH_SUBSCRIBER_LOGIN` übereinstimmen. Andere Twitch-Creator können nicht mit diesem Token abgefragt werden.
+
 ## Sicherheit
 
 Niemals diese Werte in GitHub committen:
@@ -168,6 +182,7 @@ Niemals diese Werte in GitHub committen:
 ```text
 TWITCH_CLIENT_SECRET
 TWITCH_USER_ACCESS_TOKEN
+TWITCH_SUBSCRIBER_ACCESS_TOKEN
 TWITCH_REFRESH_TOKEN
 DISCORD_TOKEN
 ```

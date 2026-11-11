@@ -17,7 +17,7 @@ from flask import Flask, request, render_template, Blueprint, jsonify, Response
 
 from core.config import OWNER_ID, BOT_DIR
 from core.logging import logger
-from core.db import get_db, get_command_usage, get_guild_config, set_guild_config, list_schematics
+from core.db import get_command_usage, get_guild_config, set_guild_config, list_schematics
 
 DATA_DIR = BOT_DIR.parent / 'data'
 TOKEN_FILE = DATA_DIR / 'dashboard_token.txt'
@@ -54,6 +54,7 @@ dashboard_bp = Blueprint('dashboard', __name__)
 
 _bot = None
 _start_time = None
+_dashboard_thread = None
 
 # ── Message Buffer ─────────────────────────────────────────────────────────────
 # Speichert die letzten 3000 Nachrichten für das Dashboard-Live-View.
@@ -754,9 +755,14 @@ def api_sse():
 
 @dashboard_bp.route('/api/automute/start', methods=['POST'])
 def api_automute_start():
-    data = request.get_json(force=True)
-    user_id = int(data.get('user_id', 0))
-    guild_id = int(data.get('guild_id', 0))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(ok=False, error='JSON-Body fehlt oder ist ungültig'), 400
+    try:
+        user_id = int(data.get('user_id', 0))
+        guild_id = int(data.get('guild_id', 0))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error='Ungültige User- oder Server-ID'), 400
     user_name = data.get('user_name', '?')
     if not user_id or not guild_id:
         return jsonify(ok=False, error='user_id und guild_id erforderlich'), 400
@@ -1077,6 +1083,7 @@ _ENFORCE_WINDOW_SECONDS = 60
 _ENFORCE_COOLDOWN_SECONDS = 300
 _enforce_lock_until = 0.0
 _enforce_window_start = 0.0
+_enforce_state_lock = threading.Lock()
 
 
 def _get_bot():
@@ -1120,38 +1127,26 @@ def api_enforce_action():
     bot = _get_bot()
     if not bot:
         return jsonify(ok=False, error='Bot nicht verbunden'), 400
-    data = request.get_json(force=True)
-    user_id = int(data.get('user_id', 0))
-    guild_id = int(data.get('guild_id', 0))
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(ok=False, error='JSON-Body fehlt oder ist ungültig'), 400
+    try:
+        user_id = int(data.get('user_id', 0))
+        guild_id = int(data.get('guild_id', 0))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error='Ungültige User- oder Server-ID'), 400
     action = data.get('action', '')
     if not user_id or not guild_id or action not in ('kick', 'mute', 'fullmute'):
         return jsonify(ok=False, error='Ungültige Parameter'), 400
 
     # Only OWNER can mute/fullmute via dashboard
     if action in ('mute', 'fullmute'):
-        requestor_id = int(data.get('requestor_id', 0))
+        try:
+            requestor_id = int(data.get('requestor_id', 0))
+        except (TypeError, ValueError):
+            requestor_id = 0
         if not requestor_id or requestor_id != OWNER_ID:
             return jsonify(ok=False, error='Nur der Owner kann Leute muten.'), 403
-
-    # Anti-Abuse-Rate-Limit für mute/fullmute (generisch, kein Ziel-User-Hardcoding)
-    if action in ('mute', 'fullmute'):
-        now = _time.time()
-        if now < _enforce_lock_until:
-            remaining = int(_enforce_lock_until - now)
-            return jsonify(ok=False, error=f'Anti-Abuse aktiv: Force-Mutes für {remaining}s gesperrt.'), 429
-        if now - _enforce_window_start > _ENFORCE_WINDOW_SECONDS:
-            _enforce_mute_counter = 0
-            _enforce_window_start = now
-        if _enforce_mute_counter >= _ENFORCE_MUTE_LIMIT:
-            _enforce_lock_until = now + _ENFORCE_COOLDOWN_SECONDS
-            _enforce_mute_counter = 0
-            _enforce_window_start = now
-            logger.warning(f'Anti-Abuse: {_ENFORCE_MUTE_LIMIT} Force-Mutes im Fenster, Enforcement für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt.')
-            log_audit_event('anti_abuse_lock', {
-                'executor': 'Anti-Abuse-System',
-                'detail': f'Force-Mutes für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt',
-            })
-            return jsonify(ok=False, error=f'Anti-Abuse aktiv: Force-Mutes für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt.'), 429
 
     # Check mute_immune.txt für mute + fullmute
     if action in ('mute', 'fullmute'):
@@ -1168,13 +1163,44 @@ def api_enforce_action():
     member = guild.get_member(user_id)
     if not member:
         return jsonify(ok=False, error='Member nicht gefunden'), 404
+    bot_member = guild.me
+    if bot_member is None:
+        return jsonify(ok=False, error='Bot-Mitglied nicht verfügbar'), 503
+
+    if action == 'kick' and not bot_member.guild_permissions.kick_members:
+        return jsonify(ok=False, error='Keine Kick-Berechtigung'), 403
+    if action in ('mute', 'fullmute') and not bot_member.guild_permissions.moderate_members:
+        return jsonify(ok=False, error='Keine Timeout-Berechtigung'), 403
+    if action == 'fullmute' and not bot_member.guild_permissions.manage_channels:
+        return jsonify(ok=False, error='Keine Kanal-Berechtigung'), 403
+
+    action_counter = None
+    if action in ('mute', 'fullmute'):
+        with _enforce_state_lock:
+            now = _time.time()
+            if now < _enforce_lock_until:
+                remaining = int(_enforce_lock_until - now)
+                return jsonify(ok=False, error=f'Anti-Abuse aktiv: Force-Mutes für {remaining}s gesperrt.'), 429
+            if now - _enforce_window_start > _ENFORCE_WINDOW_SECONDS:
+                _enforce_mute_counter = 0
+                _enforce_window_start = now
+            if _enforce_mute_counter >= _ENFORCE_MUTE_LIMIT:
+                _enforce_lock_until = now + _ENFORCE_COOLDOWN_SECONDS
+                _enforce_mute_counter = 0
+                _enforce_window_start = now
+                logger.warning(f'Anti-Abuse: {_ENFORCE_MUTE_LIMIT} Force-Mutes im Fenster, Enforcement für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt.')
+                log_audit_event('anti_abuse_lock', {
+                    'executor': 'Anti-Abuse-System',
+                    'detail': f'Force-Mutes für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt',
+                })
+                return jsonify(ok=False, error=f'Anti-Abuse aktiv: Force-Mutes für {_ENFORCE_COOLDOWN_SECONDS}s gesperrt.'), 429
+            _enforce_mute_counter += 1
+            action_counter = _enforce_mute_counter
 
     try:
         if action == 'kick':
-            if not guild.me.guild_permissions.kick_members:
-                return jsonify(ok=False, error='Keine Kick-Berechtigung'), 403
             reason = f'Force-Kick von Dashboard ({data.get("reason", "Kein Grund")})'
-            asyncio.run_coroutine_threadsafe(member.kick(reason=reason), _bot.loop)
+            asyncio.run_coroutine_threadsafe(member.kick(reason=reason), _bot.loop).result(timeout=60)
             log_audit_event('kick', {
                 'executor': 'Dashboard',
                 'target': str(member),
@@ -1183,57 +1209,47 @@ def api_enforce_action():
             return jsonify(ok=True, action='kick', user=str(member))
 
         elif action == 'mute':
-            if not guild.me.guild_permissions.moderate_members:
-                return jsonify(ok=False, error='Keine Timeout-Berechtigung'), 403
             import datetime as _dt
             until = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=24)
             reason = f'Auto-Mute von Dashboard ({data.get("reason", "Kein Grund")})'
-            asyncio.run_coroutine_threadsafe(member.timeout(until, reason=reason), _bot.loop)
-            _enforce_mute_counter += 1
+            asyncio.run_coroutine_threadsafe(member.timeout(until, reason=reason), _bot.loop).result(timeout=60)
             log_audit_event('mute', {
                 'executor': 'Dashboard',
                 'target': str(member),
                 'reason': data.get('reason', ''),
-                'counter': _enforce_mute_counter,
+                'counter': action_counter,
             })
-            return jsonify(ok=True, action='mute', user=str(member), counter=_enforce_mute_counter)
+            return jsonify(ok=True, action='mute', user=str(member), counter=action_counter)
 
         elif action == 'fullmute':
-            if not guild.me.guild_permissions.moderate_members:
-                return jsonify(ok=False, error='Keine Timeout-Berechtigung'), 403
-            if not guild.me.guild_permissions.manage_channels:
-                return jsonify(ok=False, error='Keine Kanal-Berechtigung'), 403
             import datetime as _dt
             until = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=24)
             reason = f'Full-Mute von Dashboard ({data.get("reason", "Kein Grund")})'
-            tasks = [
-                member.timeout(until, reason=reason),
-            ]
-            for ch in guild.text_channels:
-                try:
+            async def apply_fullmute():
+                tasks = [member.timeout(until, reason=reason)]
+                for ch in guild.text_channels:
                     overwrite = ch.overwrites_for(member)
                     overwrite.send_messages = False
                     overwrite.add_reactions = False
                     tasks.append(ch.set_permissions(member, overwrite=overwrite, reason=reason))
-                except Exception as e:
-                    logger.error(f'Full-Mute Kanal-Fehler ({ch.name}): {e}')
-            for ch in guild.voice_channels:
-                try:
+                for ch in guild.voice_channels:
                     overwrite = ch.overwrites_for(member)
                     overwrite.speak = False
                     overwrite.connect = False
                     tasks.append(ch.set_permissions(member, overwrite=overwrite, reason=reason))
-                except Exception as e:
-                    logger.error(f'Full-Mute Voice-Kanal-Fehler ({ch.name}): {e}')
-            asyncio.run_coroutine_threadsafe(asyncio.gather(*tasks, return_exceptions=True), _bot.loop)
-            _enforce_mute_counter += 1
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                failures = [result for result in results if isinstance(result, Exception)]
+                if failures:
+                    raise RuntimeError(f'{len(failures)} Full-Mute-Aktion(en) fehlgeschlagen: {failures[0]}')
+
+            asyncio.run_coroutine_threadsafe(apply_fullmute(), _bot.loop).result(timeout=120)
             log_audit_event('fullmute', {
                 'executor': 'Dashboard',
                 'target': str(member),
                 'reason': data.get('reason', ''),
-                'counter': _enforce_mute_counter,
+                'counter': action_counter,
             })
-            return jsonify(ok=True, action='fullmute', user=str(member), counter=_enforce_mute_counter)
+            return jsonify(ok=True, action='fullmute', user=str(member), counter=action_counter)
 
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
@@ -2526,12 +2542,17 @@ def _create_app():
     return app
 
 def start_dashboard(bot_instance, port=5682):
-    global _bot, _start_time
+    global _bot, _start_time, _dashboard_thread
     _bot = bot_instance
     _start_time = datetime.now(timezone.utc)
+    if _dashboard_thread and _dashboard_thread.is_alive():
+        return
     app = _create_app()
-    thread = threading.Thread(target=lambda: app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False), daemon=True)
-    thread.start()
+    _dashboard_thread = threading.Thread(
+        target=lambda: app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False),
+        daemon=True,
+    )
+    _dashboard_thread.start()
     logger.info(f'Dashboard gestartet auf Port {port}')
 
 
@@ -2558,3 +2579,4 @@ class Dashboard(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Dashboard(bot))
+    start_dashboard(bot)

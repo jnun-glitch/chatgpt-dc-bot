@@ -42,7 +42,8 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 POLL_SECONDS = _env_int("SOCIAL_SUBSCRIBER_POLL_SECONDS", 300, 60)
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "").strip()
-TWITCH_USER_ACCESS_TOKEN = os.environ.get("TWITCH_USER_ACCESS_TOKEN", "").strip()
+TWITCH_SUBSCRIBER_ACCESS_TOKEN = os.environ.get("TWITCH_SUBSCRIBER_ACCESS_TOKEN", "").strip()
+TWITCH_SUBSCRIBER_LOGIN = os.environ.get("TWITCH_SUBSCRIBER_LOGIN", "").strip().casefold()
 
 
 def subscriber_delta(previous: int | None, current: int | None) -> int:
@@ -84,14 +85,14 @@ def youtube_subscriber_count(channel_id: str) -> int:
 
 
 def twitch_subscriber_count(broadcaster_id: str) -> int:
-    if not TWITCH_CLIENT_ID or not TWITCH_USER_ACCESS_TOKEN:
+    if not TWITCH_CLIENT_ID or not TWITCH_SUBSCRIBER_ACCESS_TOKEN:
         raise RuntimeError("Twitch Subscriber-Tracking ist nicht konfiguriert")
     params = urllib.parse.urlencode({"broadcaster_id": broadcaster_id, "first": "1"})
     req = urllib.request.Request(
         f"https://api.twitch.tv/helix/subscriptions?{params}",
         headers={
             "Client-ID": TWITCH_CLIENT_ID,
-            "Authorization": f"Bearer {TWITCH_USER_ACCESS_TOKEN}",
+            "Authorization": f"Bearer {TWITCH_SUBSCRIBER_ACCESS_TOKEN}",
             "User-Agent": "ScratchAI/1.0",
         },
     )
@@ -185,21 +186,28 @@ class SubscriptionTrackerCog(commands.Cog):
         if provider == "youtube":
             current = await asyncio.to_thread(youtube_subscriber_count, account)
         else:
-            # Twitch's subscription endpoint requires the broadcaster to match
-            # the authorized user behind TWITCH_USER_ACCESS_TOKEN.
+            # Twitch's subscription endpoint only allows the token's broadcaster.
+            if not TWITCH_SUBSCRIBER_LOGIN or account.casefold() != TWITCH_SUBSCRIBER_LOGIN:
+                return
             from cogs.social import twitch_user
             user = await asyncio.to_thread(twitch_user, account)
             broadcaster_id = str(user["id"])
             current = await asyncio.to_thread(twitch_subscriber_count, broadcaster_id)
 
         previous = self._get_previous(guild_id, provider, account)
-        self._save_count(guild_id, provider, account, channel_id, current)
         if should_announce(previous, current):
             await self._send_change(channel_id, provider, account, previous, current)
+        self._save_count(guild_id, provider, account, channel_id, current)
 
     @tasks.loop(seconds=POLL_SECONDS)
     async def poll(self):
         for _, guild_id, provider, account, channel_id in self._configured_sources():
+            if provider == "twitch" and (
+                not TWITCH_SUBSCRIBER_ACCESS_TOKEN
+                or not TWITCH_SUBSCRIBER_LOGIN
+                or account.casefold() != TWITCH_SUBSCRIBER_LOGIN
+            ):
+                continue
             try:
                 await self._track(guild_id, provider, account, channel_id)
             except Exception as exc:

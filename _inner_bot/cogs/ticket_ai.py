@@ -105,7 +105,7 @@ class TicketAICog(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.set_footer(text="Analyse auf Moderations-/Ticket-Ebene · begrenzte Parallelität aktiv")
-        await interaction.followup.send(embed=embed, ephemeral=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

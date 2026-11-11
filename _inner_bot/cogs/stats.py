@@ -8,10 +8,9 @@ from discord.ext import commands
 
 from core.db import (
     track_command_usage, get_command_usage, save_member_snapshot,
-    get_member_history, _add_xp, _get_xp, _get_leaderboard
+    get_member_history, _add_xp, _get_leaderboard
 )
 from core.config import BOT_DIR, LEVEL_ROLES
-from core.logging import logger
 from cogs.dashboard import log_audit_event
 
 try:

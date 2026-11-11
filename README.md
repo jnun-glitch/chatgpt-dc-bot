@@ -187,7 +187,7 @@ Die Logs können über einen zentralen Admin-/Audit-Channel ausgegeben werden.
 
 Das Projekt enthält ein Ticket-/Support-System für Communities.
 
-Geplant bzw. integriert sind typische Support-Workflows wie:
+Das Ticket-System bietet typische Support-Workflows wie:
 
 - Ticket-Erstellung
 - Support-Kanäle
@@ -196,7 +196,7 @@ Geplant bzw. integriert sind typische Support-Workflows wie:
 - Ticket-Verwaltung
 - Support-Kommunikation
 
-Das System ist für eine spätere Erweiterung mit KI-Ticketanalyse vorbereitet.
+`/ticket-ai analyze` fasst den Verlauf registrierter Tickets zusammen. Es ist auf Moderations-/Ticket-Rechte beschränkt und nutzt Cooldown sowie begrenzte Parallelität. Das Ergebnis wird privat an den ausführenden Moderator gesendet.
 
 ---
 
@@ -206,12 +206,14 @@ ScratchAI besitzt ein eigenes KI-Cog und kann für AI-basierte Funktionen verwen
 
 Die Architektur ist so aufgebaut, dass KI-Funktionen nicht fest in die komplette Bot-Logik eingebaut werden müssen.
 
-Zusätzlich existiert eine Vorbereitung für externe Ticketanalyse über einen n8n-Webhook.
+Beim Erstellen eines Tickets kann ScratchAI den Fall an einen n8n-Webhook senden. Wenn `BOT_SECRET` gesetzt ist, kann n8n das Ergebnis über den lokalen Callback-Port 5681 zurück an den Ticketkanal senden.
 
 Beispiel-Konfiguration:
 
 ```env
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/ticket-analyze
+N8N_CALLBACK_URL=http://127.0.0.1:5681/ticket-callback
+BOT_SECRET=ein-langes-zufaelliges-secret
 ```
 
 ### 🧠 KI V2 Runtime
@@ -248,6 +250,20 @@ Die Music-Control-Logik unterscheidet zwischen:
 - Benutzern außerhalb des aktuellen Voice-Channels
 
 Dadurch wird verhindert, dass normale Benutzer den Musikplayer eines anderen Channels übernehmen.
+
+---
+
+# 📺 YouTube & Streamer
+
+Creator-Funktionen für YouTube, Twitch und X:
+
+- `!youtube <Kanal>` und `!yt <Kanal>` zeigen YouTube-Statistiken; benötigt `YOUTUBE_API_KEY`.
+- `!stream <Twitch-Kanal>` und `!live <Twitch-Kanal>` zeigen den aktuellen Twitch-Status; `TWITCH_DEFAULT_CHANNEL` erlaubt den Befehl ohne Argument.
+- `/notify add`, `/notify remove`, `/notify list` und `/notify test` verwalten Upload-/Live-Alerts für YouTube, Twitch und X. Alerts können optional eine Rolle erwähnen.
+- Twitch EventSub liefert schnelle Live-Meldungen per WebSocket; normales Polling bleibt als Fallback aktiv.
+- Der Subscriber-Tracker meldet Änderungen bei YouTube- und Twitch-Abozahlen. YouTube-Zahlen sind von der API gerundet. Twitch-Subscriber-Zahlen sind nur für den Broadcaster abrufbar, zu dem ein Token mit `channel:read:subscriptions` gehört.
+
+Einrichtung und Grenzen der Zugangsdaten stehen in [docs/INTEGRATIONS_SETUP.md](docs/INTEGRATIONS_SETUP.md) und [docs/TWITCH_NOTIFY_SETUP.md](docs/TWITCH_NOTIFY_SETUP.md).
 
 ---
 
@@ -299,13 +315,14 @@ Es gibt also **keinen automatischen Timeout/Ban aufgrund eines Voice-Transkripti
 
 # 🌐 Dashboard
 
-Das Projekt enthält ein Web-Dashboard-Cog und eine Web-App-Anbindung.
+`/dashboard` startet das lokale Web-Dashboard auf `http://127.0.0.1:5682/`. Es bietet Server-, Kanal- und Rollenverwaltung, Audit-/Nachrichtenansicht, Enforcement und einen Code-Editor. Es ist an Loopback gebunden und nicht von anderen Rechnern erreichbar. Der separate Health-Webserver läuft auf dem Wert von `PORT` (Standard `8080`).
 
-Die Dashboard-Integration ist über die Konfiguration mit der Bot-Webapp verknüpft.
+`WEBAPP_URL` konfiguriert externe Website-Links; es ist nicht die Adresse des lokalen Dashboards.
 
 ```env
 WEBAPP_URL=https://example.com
 BOT_SECRET=change-me
+PORT=8080
 ```
 
 Das Dashboard kann als Grundlage für eine spätere zentrale Serververwaltung dienen, ohne dass alle Einstellungen ausschließlich über Discord geändert werden müssen.
@@ -377,6 +394,15 @@ Es kann als eigenes Feature aktiviert und unabhängig von anderen Community-Syst
 Community-Funktionen sind in einem eigenen Cog organisiert und können unabhängig erweitert werden.
 
 Damit bleibt die eigentliche Bot-Struktur modular, statt sämtliche Community-Features in einer einzigen Datei zu bündeln.
+
+Weitere aktive Funktionen:
+
+- `/custom` verwaltet dynamische `!name`-Commands mit mehreren Antworten, Rollen-/Kanalregeln, Cooldowns und Audit-Verlauf. `CUSTOM_RESPONSE_OVERRIDES_JSON` kann Antworten nach User, Rolle oder Standardwert überschreiben; Details stehen in [docs/CUSTOM_COMMANDS.md](docs/CUSTOM_COMMANDS.md).
+- `/resourcepacks` prüft hochgeladene Minecraft-Resource-Pack-ZIPs und verwaltet die Bibliothek.
+- `!vcpanel` erstellt private Voice-Channels; `!vc-schutz` schützt ausgewählte Voice-Channels.
+- `!starboard` konfiguriert das Starboard, `!tag` verwaltet Community-Tags und `/rules-gate` richtet die Regelannahme ein.
+- `!weather`, `!mcstatus`/`!mc` und `!webstatus` fragen Wetter-, Minecraft- und Website-Status ab.
+- `/system health`, `/system diagnostics` und `/system metrics` zeigen Gesundheits- und Laufzeitinformationen.
 
 ---
 
@@ -481,11 +507,35 @@ chatgpt-dc-bot/
 │   ├── bot.py
 │   ├── requirements.txt
 │   ├── core/
+│   │   ├── ai.py
+│   │   ├── ai_ticket.py
+│   │   ├── ai_ticket_runtime.py
+│   │   ├── automod_strikes.py
+│   │   ├── backup.py
+│   │   ├── badwords.py
+│   │   ├── callback.py
+│   │   ├── channelnames.py
 │   │   ├── config.py
+│   │   ├── custom_command_overrides.py
+│   │   ├── custom_commands_db.py
+│   │   ├── db.py
+│   │   ├── evolution.py
+│   │   ├── health.py
+│   │   ├── images.py
+│   │   ├── linking.py
+│   │   ├── logging.py
+│   │   ├── messaging.py
+│   │   ├── metrics.py
+│   │   ├── modes.py
+│   │   ├── monitoring.py
+│   │   ├── muteimmune.py
 │   │   ├── permissions.py
 │   │   ├── roles.py
-│   │   ├── logging.py
-│   │   └── badwords.py
+│   │   ├── tasks.py
+│   │   ├── tickets.py
+│   │   ├── updates.py
+│   │   ├── utils.py
+│   │   └── views.py
 │   ├── cogs/
 │   │   ├── active.py
 │   │   ├── admin.py
@@ -494,23 +544,52 @@ chatgpt-dc-bot/
 │   │   ├── ai_v2.py
 │   │   ├── audit.py
 │   │   ├── automod.py
+│   │   ├── automod_persistence.py
 │   │   ├── backup.py
 │   │   ├── birthdays.py
 │   │   ├── community.py
 │   │   ├── counting.py
+│   │   ├── custom_commands.py
 │   │   ├── dashboard.py
 │   │   ├── fun.py
 │   │   ├── giveaways.py
 │   │   ├── help.py
+│   │   ├── info.py
+│   │   ├── inv.py
+│   │   ├── levelroles.py
+│   │   ├── mcstatus.py
+│   │   ├── moderation.py
 │   │   ├── modsuite.py
+│   │   ├── monitoring.py
+│   │   ├── msgconfig.py
 │   │   ├── music.py
+│   │   ├── nuke.py
+│   │   ├── permlock.py
+│   │   ├── private_vc.py
 │   │   ├── reactionroles.py
+│   │   ├── resourcepack_options.py
+│   │   ├── resourcepacks.py
+│   │   ├── rulesgate.py
+│   │   ├── safe_actions.py
 │   │   ├── scheduler_v2.py
+│   │   ├── schematics.py
 │   │   ├── serverconfig.py
 │   │   ├── social.py
+│   │   ├── starboard.py
+│   │   ├── stats.py
+│   │   ├── stream_status.py
+│   │   ├── subscription_tracker.py
+│   │   ├── system_health.py
+│   │   ├── tags.py
+│   │   ├── ticket_ai.py
+│   │   ├── tickets.py
 │   │   ├── twitch_eventsub.py
+│   │   ├── un.py
+│   │   ├── userinfo.py
+│   │   ├── vcprotect.py
+│   │   ├── verify.py
 │   │   ├── voice.py
-│   │   └── weitere Feature-Cogs
+│   │   └── youtube_status.py
 │   ├── data/
 │   ├── transcripts/
 │   └── tests/
@@ -598,6 +677,17 @@ VERIFIED_ROLE_NAME=Verified
 WEBAPP_URL=https://example.com
 BOT_SECRET=change-me
 
+YOUTUBE_API_KEY=
+TWITCH_CLIENT_ID=
+TWITCH_CLIENT_SECRET=
+TWITCH_DEFAULT_CHANNEL=
+TWITCH_USER_ACCESS_TOKEN=
+TWITCH_SUBSCRIBER_ACCESS_TOKEN=
+TWITCH_SUBSCRIBER_LOGIN=
+X_BEARER_TOKEN=
+NOTIFY_POLL_SECONDS=300
+SOCIAL_SUBSCRIBER_POLL_SECONDS=300
+
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/ticket-analyze
 
 OWNER_ID=0
@@ -633,9 +723,11 @@ python bot.py
 | `DISCORD_TOKEN` | Discord-Bot-Token |
 | `VERIFY_CHANNEL_ID` | Channel für Verifizierung |
 | `VERIFIED_ROLE_NAME` | Name der Verified-Rolle |
-| `WEBAPP_URL` | URL der Web-App / des Dashboards |
+| `WEBAPP_URL` | Website-URL für externe Links; das lokale Dashboard läuft separat |
 | `BOT_SECRET` | Secret für Web-/Bot-Integration |
 | `N8N_WEBHOOK_URL` | Optionaler n8n-Webhook für Ticketanalyse |
+| `N8N_WEBHOOK_URL` | Optionaler n8n-Webhook für Ticketanalyse |
+| `N8N_CALLBACK_URL` | n8n-Rückrufadresse; lokaler Callback braucht `BOT_SECRET` |
 | `OWNER_ID` | Owner-/Bot-Administrations-ID |
 | `ADMIN_LOG_CHANNEL_ID` | zentraler Admin-/Log-Channel |
 | `VOICE_TRANSCRIBE_CHUNK_SECONDS` | Länge der Voice-Transkriptions-Chunks |
@@ -647,6 +739,15 @@ python bot.py
 | `WARN_POINTS` | Punkte pro neuer Warnung |
 | `WARN_ESCALATION_THRESHOLD` | aktive Punkte bis zur automatischen Eskalation |
 | `WARN_ESCALATION_MINUTES` | Dauer des automatischen Timeouts |
+| `YOUTUBE_API_KEY` | YouTube-Statistiken und Creator-Tracking |
+| `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Twitch-Abfragen und Creator-Alerts |
+| `TWITCH_USER_ACCESS_TOKEN` | optionaler Twitch-EventSub-WebSocket-Token |
+| `TWITCH_SUBSCRIBER_ACCESS_TOKEN`, `TWITCH_SUBSCRIBER_LOGIN` | Twitch-Abozahl für genau den Broadcaster des Tokens |
+| `X_BEARER_TOKEN` | X-Creator-Alerts |
+| `NOTIFY_POLL_SECONDS` | Polling-Intervall für Creator-Alerts |
+| `SOCIAL_SUBSCRIBER_POLL_SECONDS` | Polling-Intervall für Abozahländerungen |
+| `CUSTOM_RESPONSE_OVERRIDES_JSON` | Antwortüberschreibungen nach User, Rolle und Standardwert |
+| `PORT` | Health-Webserver-Port; Dashboard separat auf Port 5682 |
 
 ---
 
@@ -741,7 +842,7 @@ Die Architektur ist auf weitere Ausbaustufen vorbereitet.
 - mehr Community-/SMP-Automatisierung
 - Discord ↔ externe Systeme / Server-Connectoren
 
-> **Aktueller V2-Fokus:** Moderation, KI-Runtime, persistente Erinnerungen, Social-Alerts, Backup-Integrität und Testabdeckung werden laufend verbessert. Custom Commands sind bewusst noch nicht Bestandteil dieser Phase. Der Minecraft-Connector bleibt ebenfalls außerhalb des aktuellen Umfangs.
+> **Aktueller V2-Fokus:** Moderation, KI-Runtime, persistente Erinnerungen, Social-Alerts, Backup-Integrität, Custom Commands und Testabdeckung werden laufend verbessert. Ein Connector für echte Minecraft-Serversteuerung ist nicht enthalten; `!mcstatus` fragt nur den öffentlichen Serverstatus ab.
 
 ---
 

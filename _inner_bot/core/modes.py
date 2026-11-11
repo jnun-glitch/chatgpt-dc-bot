@@ -78,14 +78,38 @@ async def _mode_check(interaction: discord.Interaction) -> bool:
     if mode == 'all':
         return True
     cmd_name = None
+    allowed_names: set[str] = set()
+    subcommand_names: list[str] = []
     data = interaction.data or {}
     if isinstance(data, dict):
         cmd_name = data.get('name')
+        options = data.get('options') or []
+        while isinstance(options, list):
+            subcommand = next(
+                (option for option in options if isinstance(option, dict) and option.get('type') in (1, 2)),
+                None,
+            )
+            if not subcommand:
+                break
+            sub_name = subcommand.get('name')
+            if sub_name:
+                subcommand_names.append(str(sub_name).casefold())
+            options = subcommand.get('options') or []
+        if subcommand_names:
+            allowed_names.add(subcommand_names[-1])
+        elif cmd_name:
+            allowed_names.add(str(cmd_name).casefold())
     if cmd_name is None:
         cmd_name = interaction.command.name if interaction.command else None
-    if not cmd_name or _mode_allows(mode, cmd_name):
+    if interaction.command:
+        qualified_name = interaction.command.qualified_name.casefold()
+        if not subcommand_names or ' ' in qualified_name:
+            allowed_names.add(qualified_name)
+        if not subcommand_names:
+            allowed_names.add(interaction.command.name.casefold())
+    if not cmd_name or any(_mode_allows(mode, name) for name in allowed_names):
         return True
-    if cmd_name in ('modus', 'test', 'bot-test'):
+    if allowed_names & {'modus', 'test', 'bot-test'}:
         return True
     embed = discord.Embed(
         title='Command im aktuellen Modus nicht verfügbar',

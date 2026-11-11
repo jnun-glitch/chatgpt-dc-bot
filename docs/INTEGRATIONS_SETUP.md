@@ -55,6 +55,20 @@ TWITCH_USER_ACCESS_TOKEN=DEIN_USER_ACCESS_TOKEN
 
 Nicht benötigte Token-Felder leer lassen. Tokens sind geheim und gehören nicht nach GitHub.
 
+### Twitch-Abonnentenzahl überwachen
+
+Die automatische Abozahl-Überwachung pollt Twitch-Creator, die mit `/notify add` eingerichtet wurden. Twitch erlaubt den Endpunkt für Abonnentenzahlen nur mit einem User Token des jeweiligen Broadcasters und dem Scope `channel:read:subscriptions`. Deshalb funktioniert diese Funktion nur für **einen Twitch-Account, dessen Login zum Token gehört**. Sie kann nicht die Abozahlen beliebiger Creator abfragen.
+
+Verwende dafür einen eigenen Token (der EventSub-Token ohne Scopes reicht nicht):
+
+```env
+TWITCH_SUBSCRIBER_ACCESS_TOKEN=TOKEN_DES_BROADCASTERS
+TWITCH_SUBSCRIBER_LOGIN=dein_twitch_login
+SOCIAL_SUBSCRIBER_POLL_SECONDS=300
+```
+
+Die Twitch-App muss zur `TWITCH_CLIENT_ID` passen. `TWITCH_SUBSCRIBER_LOGIN` muss exakt dem Account entsprechen, für den der Token ausgestellt wurde. Änderungen werden erst nach erfolgreicher Discord-Nachricht gespeichert und beim nächsten Poll erneut versucht, falls das Senden fehlschlägt.
+
 ### Test
 
 ```text
@@ -149,6 +163,14 @@ Damit bekommt User `1382373500844511345` bei `hi` die User-Antwort. Ein User mit
 Die JSON-Konfiguration muss in `.env` auf **einer Zeile** stehen.
 
 ## 8. Ticket-AI
+
+Der optionale n8n-Ticket-Webhook erhält beim Erstellen eines Tickets eine `callback_url`. Der Bot startet dafür bei gesetztem `BOT_SECRET` einen nur lokal erreichbaren Listener auf Port 5681 und sendet eine authentifizierte Callback-Antwort in den Ticketkanal. n8n muss den Callback-Request mit dem Header `X-Bot-Secret: <BOT_SECRET>` senden. Für n8n auf einem anderen Host muss `N8N_CALLBACK_URL` auf einen abgesicherten Reverse Proxy zeigen, der den Request an `127.0.0.1:5681` weiterleitet; der Bot-Listener selbst bleibt standardmäßig an Loopback gebunden.
+
+```env
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/ticket-analyze
+N8N_CALLBACK_URL=http://127.0.0.1:5681/ticket-callback
+BOT_SECRET=ein-langes-zufaelliges-secret
+```
 
 Die bestehende `/ai`-Spielanalyse bleibt erhalten. Die Ticketanalyse verwendet deshalb:
 
@@ -280,6 +302,7 @@ PORT=8080
 | Discord Bot | `DISCORD_TOKEN` | Ja |
 | Twitch `!stream` | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Ja |
 | Twitch EventSub WebSocket | `TWITCH_USER_ACCESS_TOKEN` | Nur für diesen vorhandenen WebSocket-Weg |
+| Twitch Subscriber Tracking | `TWITCH_SUBSCRIBER_ACCESS_TOKEN`, `TWITCH_SUBSCRIBER_LOGIN` | Ja; Token mit `channel:read:subscriptions` für genau diesen Broadcaster |
 | YouTube `!youtube` | `YOUTUBE_API_KEY` | Ja |
 | Ticket-AI | `DEEPSEEK_API_KEY` | Ja |
 | Wetter | keine | Nein |

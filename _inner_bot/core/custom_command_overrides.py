@@ -45,26 +45,30 @@ def resolve_override(command_name: str, user_id: int, role_ids_high_to_low: list
     data = _load()
     name = command_name.casefold()
     user_map = data["users"].get(str(user_id), {})
-    if isinstance(user_map, dict) and isinstance(user_map.get(name), str):
+    if isinstance(user_map, dict) and _valid_response(user_map.get(name)):
         return user_map[name], "user"
 
     for role_id in role_ids_high_to_low:
         role_map = data["roles"].get(str(role_id), {})
-        if isinstance(role_map, dict) and isinstance(role_map.get(name), str):
+        if isinstance(role_map, dict) and _valid_response(role_map.get(name)):
             return role_map[name], "role"
 
     default = data["default"].get(name)
-    if isinstance(default, str):
+    if _valid_response(default):
         return default, "default"
     return None, "none"
+
+
+def _valid_response(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= 2000
 
 
 def has_any_override(command_name: str) -> bool:
     """Small helper for diagnostics/tests."""
     name = command_name.casefold()
     data = _load()
-    if isinstance(data["default"].get(name), str):
+    if _valid_response(data["default"].get(name)):
         return True
-    return any(isinstance(value, dict) and isinstance(value.get(name), str) for value in data["users"].values()) or any(
-        isinstance(value, dict) and isinstance(value.get(name), str) for value in data["roles"].values()
+    return any(isinstance(value, dict) and _valid_response(value.get(name)) for value in data["users"].values()) or any(
+        isinstance(value, dict) and _valid_response(value.get(name)) for value in data["roles"].values()
     )

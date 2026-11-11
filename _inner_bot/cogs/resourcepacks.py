@@ -284,11 +284,13 @@ def _extract_zip_secure(zip_path: Path, target_dir: Path, prefix: str = "") -> N
                 if prefix and rel.startswith(prefix):
                     rel = rel[len(prefix):]
                 dest = (target_dir / rel).resolve()
-                if not str(dest).startswith(str(root) + str(Path("/"))):
+                if dest != root and root not in dest.parents:
                     raise ValueError("ZIP-Eintrag verlässt den Zielordner.")
                 if info.is_dir():
                     dest.mkdir(parents=True, exist_ok=True)
                     continue
+                if dest == root:
+                    raise ValueError("ZIP-Datei hat keinen gültigen relativen Dateinamen.")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info, "r") as src, dest.open("xb") as out:
                     shutil.copyfileobj(src, out, length=1024 * 1024)

@@ -7,7 +7,6 @@ import struct
 import discord
 from discord.ext import commands
 from core.db import get_guild_config, set_guild_config
-from core.logging import logger
 
 _PING_TIMEOUT = 5
 _DEFAULT_PORT = 25565

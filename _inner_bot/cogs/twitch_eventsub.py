@@ -9,13 +9,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from core.db import get_db
 from core.logging import logger
@@ -48,7 +47,7 @@ class TwitchEventSubCog(commands.Cog):
     def _configured(self) -> bool:
         return bool(EVENTSUB_ENABLED and websockets and TWITCH_CLIENT_ID and TWITCH_USER_ACCESS_TOKEN)
 
-    def _subscriptions(self) -> list[tuple[int, int, str, int | None, str | None]]:
+    def _subscriptions(self) -> list[tuple[int, int, str, int, int | None, str | None]]:
         rows = get_db().execute(
             "SELECT id,guild_id,account,channel_id,role_id,state "
             "FROM social_notifications WHERE enabled=1 AND provider='twitch'"
@@ -134,33 +133,35 @@ class TwitchEventSubCog(commands.Cog):
         rows = payload.get("data") or []
         return rows[0] if rows else None
 
-    async def _subscribe(self, websocket, session_id: str, broadcaster_id: str):
-        token = TWITCH_USER_ACCESS_TOKEN
-        body = {
-            "type": "stream.online",
-            "version": "1",
-            "condition": {"broadcaster_user_id": broadcaster_id},
-            "transport": {"method": "websocket", "session_id": session_id},
-        }
-        request = urllib.request.Request(
-            "https://api.twitch.tv/helix/eventsub/subscriptions",
-            data=json.dumps(body).encode(),
-            headers={
-                "Client-ID": TWITCH_CLIENT_ID,
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            text = exc.read().decode("utf-8", errors="replace")
-            if exc.code == 409:
-                logger.info("Twitch EventSub already subscribed: %s", broadcaster_id)
-                return
-            raise RuntimeError(f"EventSub subscribe HTTP {exc.code}: {text[:300]}") from exc
+    async def _subscribe(self, session_id: str, broadcaster_id: str):
+        def post_subscription() -> dict:
+            body = {
+                "type": "stream.online",
+                "version": "1",
+                "condition": {"broadcaster_user_id": broadcaster_id},
+                "transport": {"method": "websocket", "session_id": session_id},
+            }
+            request = urllib.request.Request(
+                "https://api.twitch.tv/helix/eventsub/subscriptions",
+                data=json.dumps(body).encode(),
+                headers={
+                    "Client-ID": TWITCH_CLIENT_ID,
+                    "Authorization": f"Bearer {TWITCH_USER_ACCESS_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                text = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 409:
+                    logger.info("Twitch EventSub already subscribed: %s", broadcaster_id)
+                    return {}
+                raise RuntimeError(f"EventSub subscribe HTTP {exc.code}: {text[:300]}") from exc
+
+        payload = await asyncio.to_thread(post_subscription)
         data = payload.get("data") or []
         if data:
             logger.info("Twitch EventSub subscribed: %s", broadcaster_id)
@@ -187,7 +188,7 @@ class TwitchEventSubCog(commands.Cog):
                             user = await asyncio.to_thread(self._twitch_user, account)
                             broadcaster_id = str(user["id"])
                             if broadcaster_id not in seen_broadcasters:
-                                await self._subscribe(websocket, session_id, broadcaster_id)
+                                await self._subscribe(session_id, broadcaster_id)
                                 seen_broadcasters.add(broadcaster_id)
                         except Exception:
                             logger.exception("Could not subscribe Twitch creator: %s", account)

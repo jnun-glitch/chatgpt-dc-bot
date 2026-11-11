@@ -1,7 +1,7 @@
 """VC-Schutz: Verhindert Kicken aus VC + Auto-Mute-Blockierung via mute_immune.txt."""
 import discord
 from discord.ext import commands
-from core.muteimmune import IMMUNE_USERS, is_mute_immune, add_immune, remove_immune, _load_immune
+from core.muteimmune import IMMUNE_USERS, add_immune, remove_immune, _load_immune
 
 
 class VCProtect(commands.Cog):

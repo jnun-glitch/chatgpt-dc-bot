@@ -13,7 +13,6 @@ from core.db import format_msg
 
 def _no_perm(interaction):
     return format_msg(interaction.guild_id, 'no_perm_msg')
-from core.logging import logger
 
 _PERM_PRESETS = {
     'nur_lesen': {'view_channel': True, 'send_messages': False, 'read_messages': True},
@@ -236,8 +235,20 @@ class ModerationCog(commands.Cog):
             return f'Kick-Schwelle ({kick_at}) erreicht, aber automatischer Kick fehlgeschlagen: {e}'
 
     @app_commands.command(name='warnings', description='Zeigt die Verwarnungen eines Users')
+    @app_commands.guild_only()
     @app_commands.describe(user='User whose warnings to show')
+    @app_commands.default_permissions(manage_messages=True)
     async def cmd_warnings(self, interaction: discord.Interaction, user: discord.Member):
+        from core.config import OWNER_ID
+        member = interaction.user
+        can_view = (
+            member.id == OWNER_ID
+            or member.guild_permissions.administrator
+            or member.guild_permissions.manage_messages
+            or member.guild_permissions.moderate_members
+        )
+        if not can_view:
+            return await interaction.response.send_message(_no_perm(interaction), ephemeral=True)
         uid = str(user.id)
         gid = str(interaction.guild_id)
         conn = get_db()
@@ -246,13 +257,13 @@ class ModerationCog(commands.Cog):
         warns = cursor.fetchall()
         conn.close()
         if not warns:
-            await interaction.response.send_message(embed=discord.Embed(description=f'{user.mention} hat keine Verwarnungen.', color=discord.Color.green()))
+            await interaction.response.send_message(embed=discord.Embed(description=f'{user.mention} hat keine Verwarnungen.', color=discord.Color.green()), ephemeral=True)
             return
         desc = '\n'.join([f'**{i+1}.** {w["grund"]} (von {w["von"]})' for i, w in enumerate(warns)])
         embed = discord.Embed(title=f'Verwarnungen von {user.display_name}', description=desc, color=discord.Color.orange())
         _, kick_at, _ = self._get_warn_thresholds(interaction.guild_id)
         embed.set_footer(text=f'{len(warns)}/{kick_at} Warns')
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name='warn-clear', description='Entfernt alle Verwarnungen eines Users')
     @app_commands.describe(user='User')

@@ -1,7 +1,6 @@
 """System diagnostics and bounded runtime metrics."""
 from __future__ import annotations
 
-import asyncio
 import time
 
 import discord

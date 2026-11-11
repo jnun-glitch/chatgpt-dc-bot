@@ -6,8 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import WEBAPP_URL
-from core.db import get_db, _get_xp, _get_leaderboard, _xp_for_level, save_reminder, get_user_reminders, cancel_reminder
+from core.db import _get_xp, _get_leaderboard, _xp_for_level, save_reminder, get_user_reminders, cancel_reminder
 from core.badwords import find_bad_word
 from core.images import make_rank_card_async
 

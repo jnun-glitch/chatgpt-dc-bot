@@ -69,6 +69,7 @@ class MusicPlayer:
         self.repeat = False
         self.volume = 0.5
         self._stopping = False
+        self._skip_current = False
         self._lock = threading.Lock()
 
     def source(self, track: dict):
@@ -94,7 +95,9 @@ class MusicPlayer:
     async def advance(self, error: Exception | None = None):
         if self._stopping:
             return
-        if self.repeat and self.current:
+        skipped = self._skip_current
+        self._skip_current = False
+        if self.repeat and self.current and not skipped:
             self.play_current()
             return
         if self.queue:
@@ -109,6 +112,15 @@ class MusicPlayer:
                     self.current = None
         else:
             self.current = None
+
+    async def skip_current(self) -> None:
+        if not self.current:
+            return
+        self._skip_current = True
+        if self.vc.is_playing() or self.vc.is_paused():
+            self.vc.stop()
+        else:
+            await self.advance()
 
     async def stop(self):
         self._stopping = True
@@ -241,7 +253,7 @@ class MusicCog(commands.Cog):
         if not player.current:
             await interaction.response.send_message("Nichts läuft.", ephemeral=True)
             return
-        player.vc.stop()
+        await player.skip_current()
         await interaction.response.send_message("⏭️ Übersprungen.")
 
     @app_commands.command(name="stop", description="Stoppt die Musik und leert die Queue")

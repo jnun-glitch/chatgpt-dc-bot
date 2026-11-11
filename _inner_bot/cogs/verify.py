@@ -1,10 +1,11 @@
 """Verifizierung: verify, verified, verify-link, verify-unlink, verify-check."""
 import time
+import sqlite3
 from datetime import datetime, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
-from core.config import VERIFY_CHANNEL_ID, VERIFIED_ROLE_NAME
+from core.config import DB_PATH, OWNER_ID, VERIFY_CHANNEL_ID, VERIFIED_ROLE_NAME
 from core.db import get_db, check_rate_limit, increment_rate_limit, reset_rate_limit, log_verification
 from core.utils import _is_allowed_channel
 from core.logging import logger
@@ -38,6 +39,29 @@ class VerifyCog(commands.Cog):
             )
             return
 
+        guild = interaction.guild
+        if guild is None:
+            await interaction.edit_original_response(
+                embed=discord.Embed(title='Fehler', description='Verifizierung ist nur auf einem Server möglich.', color=discord.Color.red())
+            )
+            return
+        role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+        bot_member = guild.me
+        if role is None:
+            await interaction.edit_original_response(
+                embed=discord.Embed(title='Fehler', description='Verified-Rolle nicht gefunden. Bitte admin informieren.', color=discord.Color.red())
+            )
+            return
+        if (
+            bot_member is None
+            or not bot_member.guild_permissions.manage_roles
+            or role >= bot_member.top_role
+        ):
+            await interaction.edit_original_response(
+                embed=discord.Embed(title='Fehler', description='Der Bot kann die Verified-Rolle nicht verwalten. Bitte Rollenrechte und Hierarchie prüfen.', color=discord.Color.red())
+            )
+            return
+
         user_id = str(interaction.user.id)
 
         blocked, remaining = check_rate_limit(user_id)
@@ -60,14 +84,18 @@ class VerifyCog(commands.Cog):
             await interaction.edit_original_response(embed=embed)
             return
 
+        conn = None
         try:
-            conn = get_db()
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute('BEGIN IMMEDIATE')
             cursor = conn.cursor()
 
             cursor.execute('SELECT * FROM verify_codes WHERE code = ?', (clean_code,))
             row = cursor.fetchone()
 
             if not row:
+                conn.rollback()
                 conn.close()
                 increment_rate_limit(user_id)
                 log_verification(user_id, clean_code, False, 'Code not found')
@@ -76,6 +104,7 @@ class VerifyCog(commands.Cog):
                 return
 
             if row['used']:
+                conn.rollback()
                 conn.close()
                 increment_rate_limit(user_id)
                 log_verification(user_id, clean_code, False, 'Already used')
@@ -83,7 +112,10 @@ class VerifyCog(commands.Cog):
                 await interaction.edit_original_response(embed=embed)
                 return
 
-            if datetime.fromisoformat(row['expires_at']) < datetime.now():
+            expires_at = datetime.fromisoformat(row['expires_at'])
+            now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
+            if expires_at < now:
+                conn.rollback()
                 conn.close()
                 increment_rate_limit(user_id)
                 log_verification(user_id, clean_code, False, 'Expired')
@@ -91,7 +123,25 @@ class VerifyCog(commands.Cog):
                 await interaction.edit_original_response(embed=embed)
                 return
 
-            cursor.execute('UPDATE verify_codes SET used = TRUE WHERE code = ?', (clean_code,))
+            cursor.execute(
+                'SELECT 1 FROM discord_links WHERE discord_user_id = ? AND confirmed = TRUE LIMIT 1',
+                (user_id,),
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                conn.close()
+                embed = discord.Embed(title='Bereits verknüpft', description='Dein Discord-Konto ist bereits mit einem Website-Account verknüpft.', color=discord.Color.orange())
+                await interaction.edit_original_response(embed=embed)
+                return
+
+            cursor.execute('UPDATE verify_codes SET used = TRUE WHERE code = ? AND used = FALSE', (clean_code,))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                conn.close()
+                increment_rate_limit(user_id)
+                embed = discord.Embed(title='Verifizierung fehlgeschlagen', description='Dieser Code wurde bereits benutzt.', color=discord.Color.red())
+                await interaction.edit_original_response(embed=embed)
+                return
 
             website_username = row['username']
             cursor.execute(
@@ -107,45 +157,68 @@ class VerifyCog(commands.Cog):
             conn.commit()
             conn.close()
 
-            reset_rate_limit(user_id)
-            log_verification(user_id, clean_code, True, f'Website user: {website_username}')
-
-            guild = interaction.guild
-            role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
-
-            if role is None:
-                embed = discord.Embed(title='Fehler', description='Verified-Rolle nicht gefunden. Bitte admin informieren.', color=discord.Color.red())
-                await interaction.edit_original_response(embed=embed)
-                return
-
             try:
                 await interaction.user.add_roles(role)
-                embed = discord.Embed(
-                    title=f'Hallo {interaction.user.display_name}! Verifizierung erfolgreich',
-                    description=(
-                        f'Willkommen! Du hast jetzt die **{VERIFIED_ROLE_NAME}**-Rolle!\n\n'
-                        f'**Website-Account:** {website_username}\n'
-                        f'**Discord:** {interaction.user}\n\n'
-                        f'Nutze jetzt `/ask` um Fragen zu stellen oder `/generate` um ein Spiel zu erstellen!'
-                    ),
-                    color=discord.Color.green()
-                )
-                await interaction.edit_original_response(embed=embed)
             except discord.Forbidden:
+                self._rollback_verification(clean_code, user_id)
+                log_verification(user_id, clean_code, False, 'Role assignment forbidden')
                 embed = discord.Embed(title='Fehler', description='Keine Berechtigung für Rollenzuweisung.', color=discord.Color.red())
                 await interaction.edit_original_response(embed=embed)
+                return
             except Exception as e:
+                self._rollback_verification(clean_code, user_id)
+                log_verification(user_id, clean_code, False, f'Role assignment failed: {str(e)[:120]}')
                 logger.error(f'Role assignment failed: {e}')
                 embed = discord.Embed(title='Fehler', description='Ein Fehler ist aufgetreten.', color=discord.Color.red())
                 await interaction.edit_original_response(embed=embed)
+                return
+
+            reset_rate_limit(user_id)
+            log_verification(user_id, clean_code, True, f'Website user: {website_username}')
+            embed = discord.Embed(
+                title=f'Hallo {interaction.user.display_name}! Verifizierung erfolgreich',
+                description=(
+                    f'Willkommen! Du hast jetzt die **{VERIFIED_ROLE_NAME}**-Rolle!\n\n'
+                    f'**Website-Account:** {website_username}\n'
+                    f'**Discord:** {interaction.user}\n\n'
+                    f'Nutze jetzt `/ask` um Fragen zu stellen oder `/generate` um ein Spiel zu erstellen!'
+                ),
+                color=discord.Color.green()
+            )
+            await interaction.edit_original_response(embed=embed)
 
         except Exception as e:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             logger.error(f'Verify error: {e}')
             embed = discord.Embed(title='Fehler', description=f'Ein Fehler ist aufgetreten: {str(e)[:200]}', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
 
+    def _rollback_verification(self, code: str, user_id: str) -> None:
+        """Restore a code if the role assignment failed after the DB commit."""
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute(
+                'DELETE FROM discord_links WHERE code = ? AND discord_user_id = ?',
+                ('LINKED_' + code, user_id),
+            )
+            conn.execute('UPDATE verify_codes SET used = FALSE WHERE code = ?', (code,))
+            conn.commit()
+        finally:
+            conn.close()
+
     @app_commands.command(name='verified', description='Zeige alle verifizierten Discord-User')
     async def cmd_verified(self, interaction: discord.Interaction):
+        if not OWNER_ID or interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message('⛔ Nur für den Bot-Owner.', ephemeral=True)
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -161,7 +234,7 @@ class VerifyCog(commands.Cog):
                     description='Noch keine verifizierten User gefunden.',
                     color=discord.Color.greyple()
                 )
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             lines = []
@@ -179,12 +252,12 @@ class VerifyCog(commands.Cog):
                 color=discord.Color.green()
             )
             embed.set_footer(text=f'Database: discord_verify.db')
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Verified list error: {e}')
             embed = discord.Embed(title='Fehler', description=str(e)[:200], color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name='verify-link', description='Verknüpfe deinen Website-Account mit Discord')
     @app_commands.describe(username='Dein Scratch-Benutzername auf der Website')
@@ -238,7 +311,7 @@ class VerifyCog(commands.Cog):
                 ),
                 color=discord.Color.orange()
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Verify-link error: {e}')
@@ -246,6 +319,7 @@ class VerifyCog(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name='verify-unlink', description='Löse die Verknüpfung mit deinem Website-Account')
+    @app_commands.guild_only()
     async def cmd_verify_unlink(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
 
@@ -269,8 +343,8 @@ class VerifyCog(commands.Cog):
             conn.close()
 
             guild = interaction.guild
-            role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
-            if role:
+            role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME) if guild else None
+            if role and isinstance(interaction.user, discord.Member):
                 try:
                     await interaction.user.remove_roles(role)
                 except Exception:
@@ -281,7 +355,7 @@ class VerifyCog(commands.Cog):
                 description=f'Die Verknüpfung mit **{website_username}** wurde gelöst.',
                 color=discord.Color.green()
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Unlink error: {e}')
@@ -292,6 +366,18 @@ class VerifyCog(commands.Cog):
     @app_commands.describe(user='Discord-User zum Prüfen')
     async def cmd_verify_check(self, interaction: discord.Interaction, user: discord.Member = None):
         target = user or interaction.user
+        if target.id != interaction.user.id:
+            member = interaction.user
+            if not (
+                (OWNER_ID and member.id == OWNER_ID)
+                or (isinstance(member, discord.Member) and (
+                    member.guild_permissions.administrator
+                    or member.guild_permissions.manage_guild
+                ))
+            ):
+                return await interaction.response.send_message(
+                    '⛔ Du darfst nur deinen eigenen Verifizierungsstatus prüfen.', ephemeral=True
+                )
         user_id = str(target.id)
 
         try:
@@ -319,12 +405,12 @@ class VerifyCog(commands.Cog):
                     description='Dieser User hat noch keine Website-Verknüpfung.',
                     color=discord.Color.greyple()
                 )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Check error: {e}')
             embed = discord.Embed(title='Fehler', description=str(e)[:200], color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

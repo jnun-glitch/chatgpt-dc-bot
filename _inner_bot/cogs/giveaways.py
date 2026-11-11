@@ -1,6 +1,5 @@
 """Giveaways: Gewinnspiele mit persistentem Button und automatischem Timer."""
 import random
-import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 

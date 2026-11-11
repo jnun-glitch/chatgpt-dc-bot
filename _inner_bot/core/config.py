@@ -36,6 +36,7 @@ VERIFIED_ROLE_NAME = _env_text("VERIFIED_ROLE_NAME", "Verified")
 WEBAPP_URL = _env_text("WEBAPP_URL", "https://scratch-ai-24bv.onrender.com")
 BOT_SECRET = _env_text("BOT_SECRET")
 N8N_WEBHOOK_URL = _env_text("N8N_WEBHOOK_URL", "http://localhost:5678/webhook/ticket-analyze")
+N8N_CALLBACK_URL = _env_text("N8N_CALLBACK_URL", "http://127.0.0.1:5681/ticket-callback")
 OWNER_ID = _env_int("OWNER_ID", 0)
 ADMIN_LOG_CHANNEL_ID = _env_int("ADMIN_LOG_CHANNEL_ID", 1518606440472776858)
 

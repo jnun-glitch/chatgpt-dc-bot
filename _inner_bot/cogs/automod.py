@@ -268,7 +268,10 @@ class AutomodCog(commands.Cog):
         gid, uid = guild.id, user.id
         self._warn_cache[gid][uid] += 1
         count = self._warn_cache[gid][uid]
-        await self._log_violation(guild, user, message.channel, reason, message.content, count=count)
+        if reason.startswith("Bad Word:"):
+            await _log_bad_word(guild, user, message.channel, message.content)
+        else:
+            await self._log_violation(guild, user, message.channel, reason, message.content, count=count)
 
         if not escalate or count < 3 or user.guild_permissions.administrator:
             return
@@ -404,9 +407,7 @@ class AutomodCog(commands.Cog):
             return False
         found = find_bad_word(message.content)
         if found:
-            await self._delete_message(message)
-            await _log_bad_word(message.guild, message.author, message.channel, message.content)
-            self._warn_cache[message.guild.id][message.author.id] += 1
+            await self._handle_violation(message, f"Bad Word: {found}")
             return True
         return False
 

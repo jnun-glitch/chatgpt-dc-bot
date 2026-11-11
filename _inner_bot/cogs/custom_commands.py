@@ -967,6 +967,13 @@ class CustomCommands(commands.Cog):
         if not response:
             return
 
+        from core.custom_command_overrides import resolve_override
+        role_ids = [role.id for role in sorted(message.author.roles, key=lambda role: role.position, reverse=True)]
+        override, _source = resolve_override(name, message.author.id, role_ids)
+        if override is not None:
+            response = dict(response)
+            response["content"] = override
+
         try:
             await self._send_response(message, command, response, args)
         except (discord.Forbidden, discord.HTTPException):

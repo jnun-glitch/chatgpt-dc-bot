@@ -7,7 +7,7 @@ import urllib.request
 
 import discord
 
-from core.config import ADMIN_LOG_CHANNEL_ID, BOT_DIR, N8N_WEBHOOK_URL, OWNER_ID, TRANSCRIPTS_DIR
+from core.config import ADMIN_LOG_CHANNEL_ID, BOT_DIR, BOT_SECRET, N8N_CALLBACK_URL, N8N_WEBHOOK_URL, OWNER_ID, TRANSCRIPTS_DIR
 from core.logging import logger
 
 
@@ -105,15 +105,17 @@ async def save_ticket_transcript(channel_id: str, guild):
 
 
 def send_ticket_to_n8n(ticket_number: int, channel_id: str, user_id: str, username: str, betreff: str, message: str):
-    payload = json.dumps({
+    data = {
         "ticket_number": ticket_number,
         "channel_id": channel_id,
         "user_id": user_id,
         "username": username,
         "betreff": betreff,
         "message": message,
-        "callback_url": "http://127.0.0.1:5681/ticket-callback",
-    }).encode("utf-8")
+    }
+    if BOT_SECRET:
+        data["callback_url"] = N8N_CALLBACK_URL
+    payload = json.dumps(data).encode("utf-8")
     req = urllib.request.Request(N8N_WEBHOOK_URL, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

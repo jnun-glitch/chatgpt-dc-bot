@@ -24,8 +24,10 @@ BOT_DIR = Path(__file__).resolve().parent
 load_dotenv(BOT_DIR / ".env", override=True)
 
 from core.ai_ticket import analyze_ticket  # noqa: E402
+from core.callback import start_callback_server  # noqa: E402
 from core.db import get_ticket_by_channel, init_db, update_ticket_ai  # noqa: E402
 from core.logging import logger  # noqa: E402
+from core.modes import _mode_check  # noqa: E402
 
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 COGS_DIR = BOT_DIR / "cogs"
@@ -51,9 +53,14 @@ class ScratchAIBot(commands.Bot):
             help_command=None,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False),
         )
+        self.tree.interaction_check = _mode_check
 
     async def setup_hook(self) -> None:
         init_db()
+        try:
+            start_callback_server(self)
+        except OSError:
+            logger.exception("n8n callback server konnte nicht gestartet werden")
         await load_all_cogs(self)
         _compact_global_commands(self)
         root_count = len(self.tree.get_commands())

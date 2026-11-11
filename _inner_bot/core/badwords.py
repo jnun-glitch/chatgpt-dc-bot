@@ -1,7 +1,6 @@
 """Bad-Wort-Filter: Liste laden + Logging in DB und Bad-Word-Log-Kanal."""
 import re
 import unicodedata
-from pathlib import Path
 from core.config import BOT_DIR
 from core.db import get_db
 from core.channelnames import find_channel
@@ -61,18 +60,21 @@ _NORMALIZE_TRANSLATION = str.maketrans({
 
 
 def _normalize_text(text: str) -> str:
-    text = unicodedata.normalize('NFKC', text).lower().translate(_NORMALIZE_TRANSLATION)
-    text = text.replace('ß', 'ss')
+    text = unicodedata.normalize('NFKC', text).casefold().translate(_NORMALIZE_TRANSLATION)
     # Trenner zwischen Buchstaben entfernen, damit z.B. Schreibweisen mit
     # Leerzeichen/Punkten nicht einfach am Filter vorbeikommen.
     return re.sub(r'[\W_]+', '', text, flags=re.UNICODE)
 
 
-def _build_patterns(words: list[str]):
+def _build_patterns(words: list[str], *, strict: bool = False):
     patterns = []
     for word in words:
         clean = _normalize_text(word)
         if not clean:
+            continue
+        if strict:
+            body = r'[\W_]*'.join(re.escape(char) for char in clean)
+            patterns.append(re.compile(r'(?<!\w)' + body + r'(?!\w)', re.IGNORECASE))
             continue
         # Einzelne Begriffe als Wortbestandteil erkennen; sehr kurze Begriffe
         # (<=3) bleiben bei der normalen Wortgrenze, um False Positives zu reduzieren.
@@ -83,7 +85,7 @@ def _build_patterns(words: list[str]):
     return patterns
 
 
-_BAD_WORD_PATTERNS = _build_patterns(BAD_WORDS)
+_BAD_WORD_PATTERNS = _build_patterns(BAD_WORDS, strict=True)
 # Nur Wörter mit einem tatsächlich kompilierbaren Muster zuordnen. So bleiben
 # Liste und Pattern auch dann korrekt ausgerichtet, wenn die Quelldatei leere
 # oder nur aus Trennzeichen bestehende Einträge enthält.
@@ -91,7 +93,7 @@ _BAD_WORD_PATTERN_WORDS = [word for word in BAD_WORDS if _normalize_text(word)]
 
 
 def find_bad_word(content: str) -> str | None:
-    normalized = _normalize_text(content)
+    normalized = unicodedata.normalize('NFKC', content).casefold().translate(_NORMALIZE_TRANSLATION)
     for pattern, original in zip(_BAD_WORD_PATTERNS, _BAD_WORD_PATTERN_WORDS):
         if pattern.search(normalized):
             return original
