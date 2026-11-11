@@ -10,7 +10,6 @@ from typing import Any
 
 from core.config import DB_PATH
 
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS automod_strikes (
     guild_id TEXT NOT NULL,
@@ -51,13 +50,7 @@ def get_strike_state(guild_id: int, user_id: int) -> dict[str, Any]:
             (str(guild_id), str(user_id)),
         ).fetchone()
         if not row:
-            return {
-                "guild_id": str(guild_id),
-                "user_id": str(user_id),
-                "strikes": 0,
-                "timeout_level": 0,
-                "last_reason": "",
-            }
+            return {"guild_id": str(guild_id), "user_id": str(user_id), "strikes": 0, "timeout_level": 0, "last_reason": ""}
         return dict(row)
     finally:
         conn.close()
@@ -69,10 +62,8 @@ def save_strike_state(guild_id: int, user_id: int, strikes: int, timeout_level: 
     try:
         conn.execute(
             "INSERT INTO automod_strikes(guild_id,user_id,strikes,timeout_level,last_reason,updated_at) "
-            "VALUES(?,?,?,?,?,?) "
-            "ON CONFLICT(guild_id,user_id) DO UPDATE SET "
-            "strikes=excluded.strikes,timeout_level=excluded.timeout_level,"
-            "last_reason=excluded.last_reason,updated_at=excluded.updated_at",
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "strikes=excluded.strikes,timeout_level=excluded.timeout_level,last_reason=excluded.last_reason,updated_at=excluded.updated_at",
             (str(guild_id), str(user_id), max(0, int(strikes)), max(0, int(timeout_level)), reason[:200], now),
         )
         conn.commit()
@@ -81,21 +72,30 @@ def save_strike_state(guild_id: int, user_id: int, strikes: int, timeout_level: 
 
 
 def record_strike(guild_id: int, user_id: int, reason: str) -> dict[str, Any]:
-    state = get_strike_state(guild_id, user_id)
-    strikes = int(state.get("strikes", 0)) + 1
-    timeout_level = int(state.get("timeout_level", 0))
-    save_strike_state(guild_id, user_id, strikes, timeout_level, reason)
-    state.update({"strikes": strikes, "timeout_level": timeout_level, "last_reason": reason[:200]})
-    return state
+    """Atomically increment the strike counter and return the new state."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO automod_strikes(guild_id,user_id,strikes,timeout_level,last_reason,updated_at) "
+            "VALUES(?,?,1,0,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+            "strikes=automod_strikes.strikes + 1,last_reason=excluded.last_reason,updated_at=excluded.updated_at",
+            (str(guild_id), str(user_id), reason[:200], now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT guild_id,user_id,strikes,timeout_level,last_reason,updated_at FROM automod_strikes WHERE guild_id=? AND user_id=?",
+            (str(guild_id), str(user_id)),
+        ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
 
 
 def reset_strikes(guild_id: int, user_id: int) -> None:
     conn = _connect()
     try:
-        conn.execute(
-            "DELETE FROM automod_strikes WHERE guild_id=? AND user_id=?",
-            (str(guild_id), str(user_id)),
-        )
+        conn.execute("DELETE FROM automod_strikes WHERE guild_id=? AND user_id=?", (str(guild_id), str(user_id)))
         conn.commit()
     finally:
         conn.close()
