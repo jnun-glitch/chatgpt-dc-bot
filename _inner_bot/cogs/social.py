@@ -1,8 +1,8 @@
 """Creator alerts for YouTube, Twitch and X.
 
-YouTube and Twitch use persistent event state. The first poll initializes the
-current feed/state without replaying old events. Later polls announce only new
-YouTube uploads/live events and new Twitch stream sessions.
+Users never enter platform passwords or OAuth credentials here. They only add a
+public creator URL/name. Twitch app credentials, when needed, stay in the bot's
+.env configuration and are never requested through Discord.
 """
 from __future__ import annotations
 
@@ -50,18 +50,47 @@ YOUTUBE_NS = {
 }
 
 
+PROVIDER_HOSTS = {
+    "youtube": {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"},
+    "twitch": {"twitch.tv", "www.twitch.tv"},
+    "x": {"x.com", "www.x.com", "twitter.com", "www.twitter.com"},
+}
+
+
 def normalize_account(provider: str, account: str) -> str:
     value = account.strip()
     if not value:
-        raise ValueError("Account darf nicht leer sein")
+        raise ValueError("Creator darf nicht leer sein")
     if provider == "youtube":
         match = re.search(r"/channel/(UC[a-zA-Z0-9_-]+)", value)
         if match:
             return match.group(1)
         return value.rstrip("/").split("/")[-1].lstrip("@")
     if provider in {"twitch", "x"}:
-        return value.rstrip("/").split("/")[-1].lstrip("@").lower()
+        return value.rstrip("/").split("/")[-1].split("?")[0].lstrip("@").lower()
     raise ValueError("Unbekannter Provider")
+
+
+def detect_provider(source: str) -> tuple[str, str]:
+    """Detect provider from a public creator URL or explicit provider prefix."""
+    value = source.strip()
+    if not value:
+        raise ValueError("Creator-Link darf nicht leer sein")
+
+    prefix = re.match(r"^(youtube|twitch|x)\s*:\s*(.+)$", value, re.IGNORECASE)
+    if prefix:
+        return prefix.group(1).lower(), prefix.group(2).strip()
+
+    candidate = value if re.match(r"^https?://", value, re.IGNORECASE) else f"https://{value}"
+    parsed = urllib.parse.urlparse(candidate)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    for provider, hosts in PROVIDER_HOSTS.items():
+        if host in hosts:
+            path = parsed.path.strip("/")
+            if not path:
+                raise ValueError("Kein Creator im Link gefunden")
+            return provider, value
+    raise ValueError("Unbekannte Plattform. Nutze einen YouTube-, Twitch- oder X-Profil-Link.")
 
 
 def _http_get(url: str, headers: dict[str, str] | None = None, timeout: int = 15) -> tuple[int, str]:
@@ -128,7 +157,6 @@ def youtube_feed(channel_id: str) -> list[dict]:
 
 
 def youtube_video_state(video_id: str) -> dict[str, bool]:
-    """Best-effort classification of a public YouTube watch page."""
     try:
         _, text = _http_get(f"https://www.youtube.com/watch?v={urllib.parse.quote(video_id)}")
     except Exception:
@@ -150,7 +178,6 @@ def youtube_kind(video_state: dict) -> str:
 
 
 def youtube_initial_marker(items: list[dict]) -> str | None:
-    """Return the newest feed ID used to seed a new subscription without alerts."""
     ordered = sorted(
         (item for item in items if item.get("id")),
         key=lambda item: (str(item.get("published") or ""), str(item.get("id") or "")),
@@ -208,7 +235,7 @@ _twitch_token: tuple[str, float] | None = None
 def twitch_app_token() -> str:
     global _twitch_token
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
-        raise RuntimeError("TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET fehlen")
+        raise RuntimeError("Twitch-Benachrichtigungen sind noch nicht vom Bot-Owner konfiguriert")
     if _twitch_token and _twitch_token[1] > time.time() + 30:
         return _twitch_token[0]
     body = urllib.parse.urlencode({
@@ -254,7 +281,7 @@ def twitch_user(login: str) -> dict:
 
 def x_user(username: str) -> dict:
     if not X_BEARER_TOKEN:
-        raise RuntimeError("X_BEARER_TOKEN fehlt")
+        raise RuntimeError("X-Benachrichtigungen sind noch nicht vom Bot-Owner konfiguriert")
     headers = {"Authorization": f"Bearer {X_BEARER_TOKEN}", "User-Agent": "ScratchAI/1.0"}
     data = _http_json(
         f"https://api.x.com/2/users/by/username/{urllib.parse.quote(username.lstrip('@'))}", headers=headers
@@ -266,7 +293,7 @@ def x_user(username: str) -> dict:
 
 def x_posts(user_id: str, since_id: str | None = None) -> list[dict]:
     if not X_BEARER_TOKEN:
-        raise RuntimeError("X_BEARER_TOKEN fehlt")
+        raise RuntimeError("X-Benachrichtigungen sind noch nicht vom Bot-Owner konfiguriert")
     params = {
         "max_results": "10",
         "tweet.fields": "created_at,text,attachments",
@@ -293,7 +320,6 @@ def x_posts(user_id: str, since_id: str | None = None) -> list[dict]:
 
 
 def latest_unseen(items: list[dict], last_seen: str | None) -> list[dict]:
-    """Return each unseen item once, in chronological order."""
     ordered = sorted(
         items,
         key=lambda item: (0, str(item.get("published") or item.get("created_at") or ""), str(item.get("id") or ""))
@@ -385,20 +411,19 @@ class SocialCog(commands.Cog):
             return (await asyncio.to_thread(twitch_user, normalized)).get("login", normalized).lower()
         return (await asyncio.to_thread(x_user, normalized)).get("username", normalized).lower()
 
-    @group.command(name="add", description="Creator-Alert hinzufügen")
-    @app_commands.describe(provider="youtube, twitch oder x", account="Kanal/Login/@Name", channel="Discord-Kanal", role="Optionale Ping-Rolle")
-    @app_commands.choices(provider=[
-        app_commands.Choice(name="YouTube", value="youtube"),
-        app_commands.Choice(name="Twitch", value="twitch"),
-        app_commands.Choice(name="X", value="x"),
-    ])
+    async def _resolve_source(self, source: str) -> tuple[str, str]:
+        provider, raw = detect_provider(source)
+        account = await self._resolve_lookup_account(provider, raw)
+        return provider, account
+
+    @group.command(name="add", description="Creator-Link hinzufügen – kein Login nötig")
+    @app_commands.describe(source="YouTube/Twitch/X-Profil-Link (oder youtube:name / twitch:name / x:name)", channel="Discord-Kanal", role="Optionale Ping-Rolle")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def add(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str, channel: discord.TextChannel, role: discord.Role | None = None):
-        p = provider.value
+    async def add(self, interaction: discord.Interaction, source: str, channel: discord.TextChannel, role: discord.Role | None = None):
         try:
-            account = await self._resolve_lookup_account(p, account)
+            p, account = await self._resolve_source(source)
         except Exception as exc:
-            await interaction.response.send_message(f"❌ Prüfung fehlgeschlagen: `{exc}`", ephemeral=True)
+            await interaction.response.send_message(f"❌ Creator konnte nicht erkannt werden: `{exc}`", ephemeral=True)
             return
         db = get_db()
         try:
@@ -412,22 +437,20 @@ class SocialCog(commands.Cog):
                 await interaction.response.send_message("⚠️ Dieser Creator ist bereits eingerichtet.", ephemeral=True)
                 return
             raise
-        await interaction.response.send_message(f"✅ **{p.upper()}** `{account}` → {channel.mention} eingerichtet.", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ **{p.upper()}** `{account}` → {channel.mention} eingerichtet.\n🔐 Kein Passwort/Login wurde abgefragt.",
+            ephemeral=True,
+        )
 
     @group.command(name="remove", description="Creator-Alert entfernen")
-    @app_commands.describe(provider="Provider", account="Kanal/Login/@Name")
-    @app_commands.choices(provider=[
-        app_commands.Choice(name="YouTube", value="youtube"),
-        app_commands.Choice(name="Twitch", value="twitch"),
-        app_commands.Choice(name="X", value="x"),
-    ])
+    @app_commands.describe(source="Derselbe Creator-Link wie beim Hinzufügen")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def remove(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
-        p = provider.value
+    async def remove(self, interaction: discord.Interaction, source: str):
         try:
-            account = await self._resolve_lookup_account(p, account)
+            p, account = await self._resolve_source(source)
         except Exception:
-            account = normalize_account(p, account)
+            p, raw = detect_provider(source)
+            account = normalize_account(p, raw)
         db = get_db()
         cur = db.execute(
             "DELETE FROM social_notifications WHERE guild_id=? AND provider=? AND account=?",
@@ -465,19 +488,14 @@ class SocialCog(commands.Cog):
             await interaction.followup.send(chunk, ephemeral=True)
 
     @group.command(name="test", description="Test-Alert senden")
-    @app_commands.describe(provider="Provider", account="Kanal/Login/@Name")
-    @app_commands.choices(provider=[
-        app_commands.Choice(name="YouTube", value="youtube"),
-        app_commands.Choice(name="Twitch", value="twitch"),
-        app_commands.Choice(name="X", value="x"),
-    ])
+    @app_commands.describe(source="Derselbe Creator-Link wie beim Hinzufügen")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def test(self, interaction: discord.Interaction, provider: app_commands.Choice[str], account: str):
-        p = provider.value
+    async def test(self, interaction: discord.Interaction, source: str):
         try:
-            account = await self._resolve_lookup_account(p, account)
+            p, account = await self._resolve_source(source)
         except Exception:
-            account = normalize_account(p, account)
+            p, raw = detect_provider(source)
+            account = normalize_account(p, raw)
         row = get_db().execute(
             "SELECT channel_id,role_id FROM social_notifications WHERE guild_id=? AND provider=? AND account=?",
             (str(interaction.guild_id), p, account),
@@ -553,7 +571,6 @@ class SocialCog(commands.Cog):
             if marker:
                 self._save(sub.id, last_seen=marker)
             return
-
         unseen = latest_unseen(items, sub.last_seen)
         for item in unseen:
             state = await asyncio.to_thread(youtube_video_state, item["id"])

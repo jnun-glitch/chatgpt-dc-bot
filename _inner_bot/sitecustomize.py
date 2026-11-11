@@ -1,10 +1,12 @@
-"""Load ScratchAI's local .env before application modules read os.environ.
+"""Early ScratchAI runtime setup.
 
-Python imports sitecustomize during interpreter startup when this directory is on
-sys.path, which makes direct `python bot.py` starts use `_inner_bot/.env` too.
+Only environment loading belongs here. Slash-command routing is implemented
+explicitly in ``bot.py`` so there is exactly one owner for application-command
+compaction and no global monkey patch of discord.py internals is required.
 """
-from pathlib import Path
+from __future__ import annotations
 
+from pathlib import Path
 from dotenv import load_dotenv
 
 BOT_DIR = Path(__file__).resolve().parent
